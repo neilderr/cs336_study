@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+# from cgitb import text
 import os
 from collections.abc import Iterable
+from selectors import DefaultSelector
+from sys import exception
+from time import timezone
 from typing import IO, Any, BinaryIO
 
 import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+
+import regex as re
 
 
 def run_linear(
@@ -452,7 +458,10 @@ def run_cross_entropy(
     raise NotImplementedError
 
 
-def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
+# 给定一组参数，将它们的组合梯度裁剪为l2范数，最多为max_l2_norm。
+def run_gradient_clipping(
+    parameters: Iterable[torch.nn.Parameter], max_l2_norm: float
+) -> None:
     """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
 
     Args:
@@ -464,6 +473,7 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
     raise NotImplementedError
 
 
+# 返回一个实现AdamW的torch.optim.Optimizer。
 def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
@@ -471,6 +481,7 @@ def get_adamw_cls() -> Any:
     raise NotImplementedError
 
 
+# 给定余弦学习率衰减计划（带线性预热）的参数和迭代次数，返回给定迭代次数下的学习率。
 def run_get_lr_cosine_schedule(
     it: int,
     max_learning_rate: float,
@@ -499,6 +510,7 @@ def run_get_lr_cosine_schedule(
     raise NotImplementedError
 
 
+# 给定模型、优化器和迭代次数，将它们序列化到磁盘。
 def run_save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -518,6 +530,8 @@ def run_save_checkpoint(
     raise NotImplementedError
 
 
+# 给定序列化的检查点（路径或文件-like 对象），将序列化的状态恢复到给定的模型和优化器中。
+# 返回我们在检查点中之前序列化的迭代次数。
 def run_load_checkpoint(
     src: str | os.PathLike | BinaryIO | IO[bytes],
     model: torch.nn.Module,
@@ -539,6 +553,7 @@ def run_load_checkpoint(
     raise NotImplementedError
 
 
+# 给定词汇表、合并列表和特殊令牌列表，返回一个使用这些词汇表、合并和特殊令牌的BPE分词器
 def get_tokenizer(
     vocab: dict[int, bytes],
     merges: list[tuple[bytes, bytes]],
@@ -562,6 +577,7 @@ def get_tokenizer(
     raise NotImplementedError
 
 
+# 给定输入语料库的路径，训练一个BPE分词器，并输出其词汇表和合并规则。
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
@@ -579,6 +595,8 @@ def run_train_bpe(
             kept as a single token. If these special tokens occur in the `input_path`,
             they are treated as any other string.
 
+    #这里vocab_size是目标词表大小，包括special_tokens，而不是传入时vocab的大小
+
     Returns:
         tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
             vocab:
@@ -588,5 +606,88 @@ def run_train_bpe(
                 BPE merges. Each list item is a tuple of bytes (<token1>, <token2>),
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
+
+    vocab = 字典里收录了哪些词
+    merges = 学这些词时形成的优先级规则
+
+    1、读取语料文件
+    2、按 special tokens 做硬切分。这些 special tokens 自己不能参与 merge 统计
+    3、对普通文本片段做 pre-tokenization。也就是把文本拆成适合 BPE 统计的更小单元
+    4、从字节级初始词表开始，反复统计 pair，选最频繁 pair 做 merge
+    5、维护：
+    vocab：最后有哪些 token
+    merges：每一步 merge 的顺序记录
+    6、达到目标词表大小后返回 (vocab, merges)
     """
-    raise NotImplementedError
+
+    # 读取训练文件，当作一整个字符串
+    print(f"[读入文件]\n文件路径：{input_path}")
+    try:
+        with open(input_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"找不到文件: {input_path}") from None
+    except Exception as e:
+        raise Exception(f"异常错误") from None
+
+    print(f"文本长度: {len(text)}")
+    print()
+
+    # 按special_tokens切分，过滤掉空字符串，返回parts列表
+    print(f"[预分词]")
+    print(f"special_token: {special_tokens}")
+    if special_tokens:
+        escaped_tokens = []
+        for token in special_tokens:
+            escaped_token = re.escape(token)
+            escaped_tokens.append(escaped_token)
+        pattern = "|".join(escaped_tokens)
+        parts = re.split(pattern, text)
+
+    filtered_parts = []
+    for part in parts:
+        if part:  # part不为空时
+            filtered_parts.append(part)
+    parts = filtered_parts
+
+    # 按照gpt-2的正则表达式预分词
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    temps = []
+    for temp in parts:
+        temps.extend(re.findall(PAT, temp))
+    parts = temps
+
+    # pretoken_counts记录tuple形式的bytes串和对应的频次
+    pretoken_counts = {}
+    for token in parts:
+        token_bytes = token.encode("utf-8")
+        token_tuple = tuple(token_bytes)
+        pretoken_counts[token_tuple] = pretoken_counts.get(token_tuple, 0) + 1
+    print("前5条pretoken_counts信息:")
+    for i, (key, value) in enumerate(list(pretoken_counts.items())[:5], start=1):
+        print(f"  {i:02d} {key} -> {value}")
+    print()
+
+    # 初始化vocab，用256token+special
+    print(f"[初始化词表]")
+    vocab = {}
+    for token_id in range(256):
+        vocab[token_id] = chr(token_id)
+    for token_id, token_str in enumerate(special_tokens, start=256):
+        vocab[token_id] = tuple(token_str.encode("utf-8"))
+    print(f"词表长度: {len(vocab)}")
+    print("打印部分special_tokens: ")
+    for token_id, token in list(vocab.items())[256:260]:
+        print(f"  {token_id}: {token}")
+
+    # merge的native实现
+    # raise NotImplementedError
+
+
+# 测试单独函数效果
+if __name__ == "__main__":
+    input_path = "tests/fixtures/tinystories_sample.txt"
+    vocab_size = 260
+    special_tokens = ["<|endoftext|>", "<|pad|>"]
+
+    run_train_bpe(input_path, vocab_size, special_tokens)

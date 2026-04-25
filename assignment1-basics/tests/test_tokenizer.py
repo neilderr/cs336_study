@@ -222,6 +222,7 @@ def test_roundtrip_unicode_string_with_special_tokens():
     )
     test_string = "Héllò hôw <|endoftext|><|endoftext|> are ü? 🙃<|endoftext|>"
     encoded_ids = tokenizer.encode(test_string)
+    # 测试roundtrip后，是否真的存在 3 个完整的 <|endoftext|>，而不是被拆成 <|、end、of、text、|> 这种碎片。”
     tokenized_string = [tokenizer.decode([x]) for x in encoded_ids]
     # Ensure the special <|endoftext|> token is preserved
     assert tokenized_string.count("<|endoftext|>") == 3
