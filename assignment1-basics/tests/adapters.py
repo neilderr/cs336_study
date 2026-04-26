@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 # from cgitb import text
+from heapq import merge
 import os
 from collections.abc import Iterable
+from random import vonmisesvariate
 from selectors import DefaultSelector
 from sys import exception
 from time import timezone
@@ -661,26 +663,76 @@ def run_train_bpe(
     pretoken_counts = {}
     for token in parts:
         token_bytes = token.encode("utf-8")
-        token_tuple = tuple(token_bytes)
+        token_tuple = tuple(bytes([b]) for b in token_bytes)
         pretoken_counts[token_tuple] = pretoken_counts.get(token_tuple, 0) + 1
     print("前5条pretoken_counts信息:")
     for i, (key, value) in enumerate(list(pretoken_counts.items())[:5], start=1):
-        print(f"  {i:02d} {key} -> {value}")
+        print(f"  {i:02d} {key}: {value}")
     print()
 
-    # 初始化vocab，用256token+special
+    # 初始化vocab和merge，内容为 256token + special
     print(f"[初始化词表]")
     vocab = {}
+    merges = []
     for token_id in range(256):
-        vocab[token_id] = chr(token_id)
-    for token_id, token_str in enumerate(special_tokens, start=256):
-        vocab[token_id] = tuple(token_str.encode("utf-8"))
+        vocab[token_id] = bytes([token_id])
+    for token_str in special_tokens:
+        vocab[len(vocab)] = token_str.encode("utf-8")
     print(f"词表长度: {len(vocab)}")
     print("打印部分special_tokens: ")
     for token_id, token in list(vocab.items())[256:260]:
         print(f"  {token_id}: {token}")
+    print()
 
     # merge的native实现
+    # 循环直至达到vocab_size
+    print(f"[merge阶段]")
+    print(f"vocab_siz = {vocab_size}")
+    while len(vocab) < vocab_size:
+        print(f"词表长度: {len(vocab)}")
+
+        # 计算出相邻序列的频次pair_count
+        pair_count = {}
+        for seq, freq in pretoken_counts.items():
+            for i in range(len(seq) - 1):
+                pair = (seq[i], seq[i + 1])
+                pair_count[pair] = pair_count.get(pair, 0) + freq
+        # print(f"  打印部分pair_count:")
+        # for key, value in list(pair_count.items())[:5]:
+        #     print(f"    {key}: {value}")
+        # 计算频次最高的pair，频次相同则按字典序排序
+        best_pair, best_count = max(
+            pair_count.items(), key=lambda item: (item[1], item[0])
+        )
+        # 更新merges和vocab
+        merges.append(best_pair)
+        token_id = len(vocab)
+        vocab[token_id] = best_pair[0] + best_pair[1]
+        print(f"  best_pair: {best_pair}->{best_count}")
+        # 更新pair_count
+        new_pretoken_counts = {}
+        for seq, freq in pretoken_counts.items():
+            new_seq = []
+            i = 0
+            while i < len(seq):
+                if i < len(seq) - 1 and (seq[i], seq[i + 1]) == best_pair:
+                    token = seq[i] + seq[i + 1]
+                    new_seq.append(token)
+                    i += 2
+                else:
+                    new_seq.append(seq[i])
+                    i += 1
+                # break
+            new_seq = tuple(new_seq)
+            new_pretoken_counts[new_seq] = new_pretoken_counts.get(new_seq, 0) + freq
+            # print(new_seq)
+            # break
+        pretoken_counts = new_pretoken_counts
+        # break
+    return vocab, merges
+    # print()
+    # print(f"打印vocab")
+    # print(vocab)
     # raise NotImplementedError
 
 
