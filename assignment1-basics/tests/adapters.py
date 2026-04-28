@@ -2,13 +2,13 @@ from __future__ import annotations
 
 # from cgitb import text
 from heapq import merge
+from hmac import new
 import os
 from collections.abc import Iterable
 from random import vonmisesvariate
 from selectors import DefaultSelector
 from sys import exception
-from time import timezone
-import tokenize
+from tabnanny import process_tokens
 from typing import IO, Any, BinaryIO
 
 import numpy.typing as npt
@@ -21,6 +21,10 @@ import json
 
 # byte -> unicode_char 的表
 from tests.common import gpt2_bytes_to_unicode
+from tqdm import tqdm
+import time
+import resource
+import sys
 
 
 class Tokenizer:
@@ -799,7 +803,12 @@ def run_train_bpe(
     merges：每一步 merge 的顺序记录
     6、达到目标词表大小后返回 (vocab, merges)
     """
+    # 从kwargs里取出合并模式，默认用增量方式
+    merge_mode = kwargs.get("merge_mode", "incremental")
 
+    # 启动计时器
+    start_time = time.time()
+    phase_start_time = start_time
     # 读取训练文件，当作一整个字符串
     print(f"[读入文件]\n文件路径：{input_path}")
     try:
@@ -809,13 +818,16 @@ def run_train_bpe(
         raise FileNotFoundError(f"找不到文件: {input_path}") from None
     except Exception as e:
         raise Exception(f"异常错误") from None
-
     print(f"文本长度: {len(text)}")
+    phase_end_time = time.time()
+    print(f"消耗时间: {phase_end_time-phase_start_time:.6f} 秒")
     print()
 
     # 按special_tokens切分，过滤掉空字符串，返回parts列表
     print(f"[预分词]")
     print(f"special_token: {special_tokens}")
+    phase_start_time = time.time()
+
     if special_tokens:
         escaped_tokens = []
         for token in special_tokens:
@@ -844,13 +856,16 @@ def run_train_bpe(
         token_bytes = token.encode("utf-8")
         token_tuple = tuple(bytes([b]) for b in token_bytes)
         pretoken_counts[token_tuple] = pretoken_counts.get(token_tuple, 0) + 1
-    print("前5条pretoken_counts信息:")
-    for i, (key, value) in enumerate(list(pretoken_counts.items())[:5], start=1):
-        print(f"  {i:02d} {key}: {value}")
+    # print("前5条pretoken_counts信息:")
+    # for i, (key, value) in enumerate(list(pretoken_counts.items())[:5], start=1):
+    #     print(f"  {i:02d} {key}: {value}")
+    phase_end_time = time.time()
+    print(f"消耗时间: {phase_end_time-phase_start_time:.2f} 秒")
     print()
 
     # 初始化vocab和merge，内容为 256token + special
     print(f"[初始化词表]")
+    phase_start_time = time.time()
     vocab = {}
     merges = []
     for token_id in range(256):
@@ -858,59 +873,191 @@ def run_train_bpe(
     for token_str in special_tokens:
         vocab[len(vocab)] = token_str.encode("utf-8")
     print(f"词表长度: {len(vocab)}")
-    print("打印部分special_tokens: ")
-    for token_id, token in list(vocab.items())[256:260]:
-        print(f"  {token_id}: {token}")
+    print(f"目标词表长度: {vocab_size}")
+    phase_end_time = time.time()
+    print(f"消耗时间: {phase_end_time-phase_start_time:.6f} 秒")
     print()
 
-    # merge的native实现
+    # merge阶段
     # 循环直至达到vocab_size
-    print(f"[merge阶段]")
-    print(f"vocab_siz = {vocab_size}")
-    while len(vocab) < vocab_size:
-        print(f"词表长度: {len(vocab)}")
+    print(f"[merge阶段]: {merge_mode} 模式")
+    phase_start_time = time.time()
+    print(f"vocab_size = {vocab_size}")
+    # 进度条实现
+    progress_bar = tqdm(total=vocab_size, desc="BEP merges", initial=len(vocab))
+    # 增量法实现
+    if merge_mode == "incremental":
 
-        # 计算出相邻序列的频次pair_count
+        # 核心部分！！！
+        # pair_to_seqs：某个pair出现在哪些seq里，每次获取best_pair后只需要修改其对应的seq
+        # dict[tuple[bytes, bytes], set[tuple[bytes, ...]]]，类似下面的结构
+        """
+        {
+            (b't', b'h'): {
+                (b't', b'h', b'e'),
+                (b't', b'h', b'a', b't'),
+            }
+        }
+        """
+        # 开始完整遍历一次获取pair_count和pair_to_seqs
+        pair_to_seqs = {}
         pair_count = {}
         for seq, freq in pretoken_counts.items():
             for i in range(len(seq) - 1):
                 pair = (seq[i], seq[i + 1])
                 pair_count[pair] = pair_count.get(pair, 0) + freq
-        # print(f"  打印部分pair_count:")
-        # for key, value in list(pair_count.items())[:5]:
-        #     print(f"    {key}: {value}")
+                # 如果这个pair没有对应的集合，就先创建一个新空集合
+                if pair not in pair_to_seqs:
+                    pair_to_seqs[pair] = set()
+                # 把seq加入pair对应的集合里
+                pair_to_seqs[pair].add(seq)
 
-        # 计算频次最高的pair，频次相同则按字典序排序
-        best_pair, best_count = max(
-            pair_count.items(), key=lambda item: (item[1], item[0])
-        )
-        # 更新merges和vocab
-        merges.append(best_pair)
-        token_id = len(vocab)
-        vocab[token_id] = best_pair[0] + best_pair[1]
-        print(f"  best_pair: {best_pair}->{best_count}")
-        # 更新pair_count
-        new_pretoken_counts = {}
-        for seq, freq in pretoken_counts.items():
-            new_seq = []
-            i = 0
-            while i < len(seq):
-                if i < len(seq) - 1 and (seq[i], seq[i + 1]) == best_pair:
-                    token = seq[i] + seq[i + 1]
-                    new_seq.append(token)
-                    i += 2
-                else:
-                    new_seq.append(seq[i])
-                    i += 1
-            new_seq = tuple(new_seq)
-            new_pretoken_counts[new_seq] = new_pretoken_counts.get(new_seq, 0) + freq
-        pretoken_counts = new_pretoken_counts
+        # merge循环
+        while len(vocab) < vocab_size:
+            # 如果训练集太小，会出现没有可以merge的pair_count，此时直接退出
+            if not pair_count:
+                progress_bar.close()
+                print(f"没有可以merge的pair，退出训练\n词表长度: {len(vocab)}\n")
+                break
+            # 计算频次最高的pair，频次相同则按字典序排序
+            best_pair, best_count = max(
+                pair_count.items(), key=lambda item: (item[1], item[0])
+            )
+            # 更新merges和vocab
+            merges.append(best_pair)
+            merged_pair = best_pair[0] + best_pair[1]
+            token_id = len(vocab)
+            vocab[token_id] = merged_pair
+
+            # affected_seqs代表受影响的seqs
+            # 如果best_pair存在，拿到它对应的seq。否则返回空集合set()
+            # 转成list是方便后续更改
+            affected_seqs = list(pair_to_seqs.get(best_pair, set()))
+
+            for old_seq in affected_seqs:
+                freq = pretoken_counts.pop(old_seq)
+                old_seq_len = len(old_seq)
+                # 1. 先把 old_seq 对所有 pair 的贡献删掉
+                # 逐位置更新 pair_count
+                old_pairs_in_seq = set()
+                for i in range(old_seq_len - 1):
+                    pair = (old_seq[i], old_seq[i + 1])
+                    # 删除old_seq对pair_count的贡献
+                    pair_count[pair] -= freq
+                    if pair_count[pair] <= 0:
+                        del pair_count[pair]
+                    # 记录old_seq里出现过几种不同的pair
+                    old_pairs_in_seq.add(pair)
+
+                # 按“不同 pair”更新 pair_to_seqs
+                for pair in old_pairs_in_seq:
+                    # pair不在出现在old_seq里，因为old_seq将要删除
+                    pair_to_seqs[pair].discard(old_seq)
+                    if not pair_to_seqs[pair]:
+                        del pair_to_seqs[pair]
+                # 2. 构造 new_seq
+                new_seq = []
+                i = 0
+                while i < old_seq_len:
+                    if (
+                        i < old_seq_len - 1
+                        and (old_seq[i], old_seq[i + 1]) == best_pair
+                    ):
+                        new_seq.append(merged_pair)
+                        i += 2
+                    else:
+                        new_seq.append(old_seq[i])
+                        i += 1
+
+                # 3. 把 new_seq 放回 pretoken_counts
+                new_seq = tuple(new_seq)
+                pretoken_counts[new_seq] = pretoken_counts.get(new_seq, 0) + freq
+                # 4. 把 new_seq 对所有 pair 的贡献加回去
+                for i in range(len(new_seq) - 1):
+                    pair = (new_seq[i], new_seq[i + 1])
+                    # 添加pair对pair_count的贡献
+                    pair_count[pair] = pair_count.get(pair, 0) + freq
+                    # pair出现在new_seq里
+                    if pair not in pair_to_seqs:
+                        pair_to_seqs[pair] = set()
+                    pair_to_seqs[pair].add(new_seq)
+            # 更新pretoken_counts和pair_counts
+            progress_bar.update(1)
+
+    # nativa实现
+    else:
+        while len(vocab) < vocab_size:
+            # print(f"词表长度: {len(vocab)}")
+            # 计算出相邻序列的频次pair_count
+            pair_count = {}
+            for seq, freq in pretoken_counts.items():
+                for i in range(len(seq) - 1):
+                    pair = (seq[i], seq[i + 1])
+                    pair_count[pair] = pair_count.get(pair, 0) + freq
+            # 如果训练集太小，会出现没有可以merge的pair_count，此时直接退出
+            if not pair_count:
+                progress_bar.close()
+                print(f"没有可以merge的pair，退出训练\n词表长度: {len(vocab)}\n")
+                break
+            # 计算频次最高的pair，频次相同则按字典序排序
+            best_pair, best_count = max(
+                pair_count.items(), key=lambda item: (item[1], item[0])
+            )
+            # 更新merges和vocab
+            merges.append(best_pair)
+            token_id = len(vocab)
+            vocab[token_id] = best_pair[0] + best_pair[1]
+            # 更新pair_count
+            new_pretoken_counts = {}
+            for seq, freq in pretoken_counts.items():
+                new_seq = []
+                i = 0
+                while i < len(seq):
+                    if i < len(seq) - 1 and (seq[i], seq[i + 1]) == best_pair:
+                        token = seq[i] + seq[i + 1]
+                        new_seq.append(token)
+                        i += 2
+                    else:
+                        new_seq.append(seq[i])
+                        i += 1
+                new_seq = tuple(new_seq)
+                new_pretoken_counts[new_seq] = (
+                    new_pretoken_counts.get(new_seq, 0) + freq
+                )
+            pretoken_counts = new_pretoken_counts
+            progress_bar.update(1)
+
+    progress_bar.close()
+
+    # 打印时间和内存
+    phase_end_time = time.time()
+    print(f"消耗时间: {phase_end_time-phase_start_time:.2f} 秒")
+    print()
+    print(f"总训练耗时: {time.time()-start_time:.2f} 秒")
+
+    peak_memory_mb = get_peak_memory_mb()
+    print(f"训练峰值内存: {peak_memory_mb:.2f} MB")
+
+    # 打印最长token
+    longest_token_id, longest_token_bytes = max(
+        vocab.items(), key=lambda item: len(item[1])
+    )
+    print()
+    print(f"最长 token id: {longest_token_id}")
+    print(f"最长 token bytes 长度: {len(longest_token_bytes)}")
+    byte_encoder = gpt2_bytes_to_unicode()
+    longest_token_str = "".join(byte_encoder[b] for b in longest_token_bytes)
+    print(f"最长 token: {longest_token_str}")
     return vocab, merges
 
 
-# TODO: 按 special token 边界切分语料，并行执行 pre-tokenization
-# TODO: 每轮 merge 后只更新受影响的 pair_count，避免重复遍历全部 pretoken_counts
-# TODO: 测试并优化在TinyStories和OpenWebText数据集上的训练
+# macOS和Linux上有不同的内存单位
+def get_peak_memory_mb() -> float:
+    memory = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == "darwin":
+        return memory / 1024 / 1024
+    return memory / 1024
+
 
 # 测试单独函数效果
 if __name__ == "__main__":
