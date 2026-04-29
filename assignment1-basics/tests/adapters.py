@@ -21,6 +21,7 @@ from tqdm import tqdm
 import time
 import resource
 import sys
+from pathlib import Path
 
 
 class Tokenizer:
@@ -811,6 +812,15 @@ def run_train_bpe(
     pretoken_counts = {}
     buffer = ""  # 缓存区
     chunk_size = 1024 * 1024  # 1M
+    # 进度条
+    file_size = Path(input_path).stat().st_size
+    progress_bar = tqdm(
+        total=file_size,
+        desc="Pretokenizing",
+        unit="B",
+        unit_scale=True,
+    )
+
     # 构建预分词器
     if special_tokens:
         escaped_tokens = []
@@ -833,7 +843,7 @@ def run_train_bpe(
             # 如果没有后续内容
             if not chunk:
                 break
-
+            progress_bar.update(len(chunk.encode("utf-8")))
             buffer += chunk
             # 为了保证分词质量，buffer不能太小
             if len(buffer) <= tail_size:
@@ -859,6 +869,7 @@ def run_train_bpe(
             else:
                 update_pretoken_counts_from_str(buffer, pretoken_counts)
 
+    progress_bar.close()
     phase_end_time = time.time()
     print(f"消耗时间: {phase_end_time-phase_start_time:.2f} 秒")
     print()
