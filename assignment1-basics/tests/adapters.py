@@ -818,8 +818,11 @@ def run_train_bpe(
     pretoken_counts = {}
     # 并行化参数
     num_workers = kwargs.get("num_workers", 4)
+    num_chunks = kwargs.get("num_chunks", num_workers * 8)
     mini_chunk_size = kwargs.get("mini_chunk_size", 4096)
+
     print(f"num_workers = {num_workers}")
+    print(f"num_chunks = {num_chunks}")
     print(f"mini_chunk_size = {mini_chunk_size}")
 
     # 二进制打开文件，按照special_tokens切分文件
@@ -827,7 +830,7 @@ def run_train_bpe(
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(
             f,
-            num_workers,
+            num_chunks,
             b"<|endoftext|>",
             mini_chunk_size,
         )
@@ -836,6 +839,7 @@ def run_train_bpe(
     # 相邻边界组合成区间
     for start, end in zip(boundaries[:-1], boundaries[1:]):
         tasks.append((str(input_path), start, end, special_tokens))
+    print(f"实际 chunk 数 = {len(tasks)}")
 
     progress_bar = tqdm(total=len(tasks), desc="Pretokenizing Chunks")
 
@@ -847,6 +851,7 @@ def run_train_bpe(
                 )
             progress_bar.update(1)
         progress_bar.close()
+
     phase_end_time = time.time()
     print(f"消耗时间: {phase_end_time-phase_start_time:.2f} 秒")
     print()
@@ -1065,7 +1070,7 @@ def update_pretoken_counts_from_str(
 # 找到文件的安全边界，接收二进制文件
 def find_chunk_boundaries(
     file: BinaryIO,
-    desired_num_chunks: int,
+    desired_num_chunks: int,  # 总共想切几块
     split_special_token: bytes,
     mini_chunk_size: int = 4096,
 ) -> list[int]:
