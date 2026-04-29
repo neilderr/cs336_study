@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 # from cgitb import text
+from abc import update_abstractmethods
+from ast import pattern
+from operator import truediv
 import os
 from collections.abc import Iterable
 from random import vonmisesvariate
 from selectors import DefaultSelector
-from typing import IO, Any, BinaryIO
+from typing import IO, Any, BinaryIO, Iterator
 
 import numpy.typing as npt
 import torch
@@ -22,6 +25,7 @@ import time
 import resource
 import sys
 from pathlib import Path
+from multiprocessing import Pool
 
 
 class Tokenizer:
@@ -808,68 +812,27 @@ def run_train_bpe(
     phase_start_time = start_time
 
     # 流式读取训练语料
-    print(f"[流式读入文件 & 预分词]\n文件路径：{input_path}")
+    print(f"[流式读入文件 & 并行预分词]\n文件路径：{input_path}")
     pretoken_counts = {}
-    buffer = ""  # 缓存区
-    chunk_size = 1024 * 1024  # 1M
-    # 进度条
-    file_size = Path(input_path).stat().st_size
-    progress_bar = tqdm(
-        total=file_size,
-        desc="Pretokenizing",
-        unit="B",
-        unit_scale=True,
-    )
+    # 并行化参数
+    num_workers = kwargs.get("num_workers", 2)
+    pool_chunksize = kwargs.get("pool_chunksize", 8)
+    chunk_size = kwargs.get("read_chunk_size", 1024 * 1024)
+    print(f"num_workers = {num_workers}")
+    print(f"pool_chunksize = {pool_chunksize}")
+    print(f"chunk_size = {chunk_size}")
+    documents = iter_documents(input_path, special_tokens, chunk_size)
 
-    # 构建预分词器
-    if special_tokens:
-        escaped_tokens = []
-        for token in special_tokens:
-            escaped_token = re.escape(token)
-            escaped_tokens.append(escaped_token)
-        # 重排序，使得优先匹配长的special_tokens
-        escaped_tokens.sort(key=len, reverse=True)
-        pattern = "|".join(escaped_tokens)
-        max_special_len = max(len(token) for token in special_tokens)
-    else:
-        pattern = None
-        max_special_len = 0
-    # 预留buffer最短长度
-    tail_size = max(max_special_len - 1, 1024)
-
-    with open(input_path, "r", encoding="utf-8") as f:
-        while True:
-            chunk = f.read(chunk_size)
-            # 如果没有后续内容
-            if not chunk:
-                break
-            progress_bar.update(len(chunk.encode("utf-8")))
-            buffer += chunk
-            # 为了保证分词质量，buffer不能太小
-            if len(buffer) <= tail_size:
-                continue
-
-            safe_text = buffer[:-tail_size]
-            buffer = buffer[-tail_size:]
-            if special_tokens:
-                parts = re.split(pattern, safe_text)
-            else:
-                parts = [safe_text]
-
-            for part in parts:
-                if part:  # 跳过空白串
-                    update_pretoken_counts_from_str(part, pretoken_counts)
-        # 处理剩下的buffer内容
-        if buffer:
-            if special_tokens:
-                final_parts = re.split(pattern, buffer)
-                for part in final_parts:
-                    if part:
-                        update_pretoken_counts_from_str(part, pretoken_counts)
-            else:
-                update_pretoken_counts_from_str(buffer, pretoken_counts)
-
-    progress_bar.close()
+    with Pool(processes=num_workers) as pool:
+        for local_counts in pool.imap_unordered(
+            process_document,
+            documents,
+            chunksize=pool_chunksize,
+        ):
+            for token_tuple, count in local_counts.items():
+                pretoken_counts[token_tuple] = (
+                    pretoken_counts.get(token_tuple, 0) + count
+                )
     phase_end_time = time.time()
     print(f"消耗时间: {phase_end_time-phase_start_time:.2f} 秒")
     print()
@@ -1083,6 +1046,80 @@ def update_pretoken_counts_from_str(
         token_bytes = token.encode("utf-8")
         token_tuple = tuple(bytes([b]) for b in token_bytes)
         pretoken_counts[token_tuple] = pretoken_counts.get(token_tuple, 0) + 1
+
+
+# 读取文件，通过special_tokens产出document
+def iter_documents(
+    input_path: str | os.PathLike,
+    special_tokens: list[str],
+    chunk_size: int,
+) -> Iterator[str]:
+
+    buffer = ""
+    if special_tokens:
+        escaped_tokens = []
+        for token in special_tokens:
+            escaped_tokens.append(re.escape(token))
+        escaped_tokens.sort(key=len, reverse=True)
+        pattern = "|".join(escaped_tokens)
+        max_special_len = max(len(token) for token in special_tokens)
+    else:
+        pattern = None
+        max_special_len = 0
+    tail_size = max(max_special_len - 1, 1024)
+    # 进度条
+    file_size = Path(input_path).stat().st_size
+    progress_bar = tqdm(
+        total=file_size,
+        desc="Pretokenizing",
+        unit="B",
+        unit_scale=True,
+    )
+
+    try:
+        with open(input_path, "r", encoding="utf-8") as f:
+            while True:
+                chunk = f.read(chunk_size)
+                # 如果没有后续内容
+                if not chunk:
+                    break
+
+                progress_bar.update(len(chunk.encode("utf-8")))
+
+                buffer += chunk
+                # 为了保证分词质量，buffer不能太小
+                if len(buffer) <= tail_size:
+                    continue
+
+                safe_text = buffer[:-tail_size]
+                buffer = buffer[-tail_size:]
+                if special_tokens:
+                    parts = re.split(pattern, safe_text)
+                    for part in parts:
+                        if part:
+                            yield part
+                else:
+                    if safe_text:
+                        yield safe_text
+
+            # 处理剩下的buffer内容
+            if buffer:
+                if special_tokens:
+                    final_parts = re.split(pattern, buffer)
+                    for part in final_parts:
+                        if part:
+                            yield part
+                else:
+                    yield buffer
+    finally:
+        progress_bar.close()
+
+
+# 输入str，进行预分词，返回局部的dict
+def process_document(document: str) -> dict[tuple[bytes, ...], int]:
+    local_counts = {}
+    update_pretoken_counts_from_str(document, local_counts)
+    return local_counts
 
 
 # 测试单独函数效果
