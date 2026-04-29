@@ -818,10 +818,18 @@ def run_train_bpe(
     num_workers = kwargs.get("num_workers", 2)
     pool_chunksize = kwargs.get("pool_chunksize", 8)
     chunk_size = kwargs.get("read_chunk_size", 1024 * 1024)
+    document_batch_size = kwargs.get("document_batch_size", 64)
     print(f"num_workers = {num_workers}")
     print(f"pool_chunksize = {pool_chunksize}")
     print(f"chunk_size = {chunk_size}")
-    documents = iter_documents(input_path, special_tokens, chunk_size)
+    print(f"document_batch_size = {document_batch_size}")
+
+    documents = iter_documents(
+        input_path,
+        special_tokens,
+        chunk_size,
+        document_batch_size,
+    )
 
     with Pool(processes=num_workers) as pool:
         for local_counts in pool.imap_unordered(
@@ -1053,8 +1061,10 @@ def iter_documents(
     input_path: str | os.PathLike,
     special_tokens: list[str],
     chunk_size: int,
-) -> Iterator[str]:
+    document_batch_size: int,
+) -> Iterator[list[str]]:
 
+    batch = []
     buffer = ""
     if special_tokens:
         escaped_tokens = []
@@ -1097,10 +1107,16 @@ def iter_documents(
                     parts = re.split(pattern, safe_text)
                     for part in parts:
                         if part:
-                            yield part
+                            batch.append(part)
+                            if (len(batch)) >= document_batch_size:
+                                yield batch
+                                batch = []
                 else:
                     if safe_text:
-                        yield safe_text
+                        batch.append(part)
+                        if (len(batch)) >= document_batch_size:
+                            yield batch
+                            batch = []
 
             # 处理剩下的buffer内容
             if buffer:
@@ -1108,17 +1124,24 @@ def iter_documents(
                     final_parts = re.split(pattern, buffer)
                     for part in final_parts:
                         if part:
-                            yield part
+                            batch.append(part)
+                            if (len(batch)) >= document_batch_size:
+                                yield batch
+                                batch = []
                 else:
-                    yield buffer
+                    batch.append(buffer)
+            if batch:
+                yield batch
+
     finally:
         progress_bar.close()
 
 
 # 输入str，进行预分词，返回局部的dict
-def process_document(document: str) -> dict[tuple[bytes, ...], int]:
+def process_document(documents: list[str]) -> dict[tuple[bytes, ...], int]:
     local_counts = {}
-    update_pretoken_counts_from_str(document, local_counts)
+    for document in documents:
+        update_pretoken_counts_from_str(document, local_counts)
     return local_counts
 
 
