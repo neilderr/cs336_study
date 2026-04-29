@@ -27,12 +27,13 @@ def train_bpe(
     if not input_path.is_absolute():
         input_path = PROJECT_DIR / input_path
 
+    # 训练
     vocab, merges = run_train_bpe(
         input_path,
         vocab_size,
         special_tokens,
         num_workers=4,
-        pool_chunksize=16,
+        mini_chunk_size=4096,
     )
     print()
 
