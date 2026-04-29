@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 # from cgitb import text
-from heapq import merge
-from hmac import new
 import os
 from collections.abc import Iterable
 from random import vonmisesvariate
 from selectors import DefaultSelector
-from sys import exception
-from tabnanny import process_tokens
 from typing import IO, Any, BinaryIO
 
 import numpy.typing as npt
@@ -809,56 +805,60 @@ def run_train_bpe(
     # 启动计时器
     start_time = time.time()
     phase_start_time = start_time
-    # 读取训练文件，当作一整个字符串
-    print(f"[读入文件]\n文件路径：{input_path}")
-    try:
-        with open(input_path, "r", encoding="utf-8") as f:
-            text = f.read()
-    except FileNotFoundError:
-        raise FileNotFoundError(f"找不到文件: {input_path}") from None
-    except Exception as e:
-        raise Exception(f"异常错误") from None
-    print(f"文本长度: {len(text)}")
-    phase_end_time = time.time()
-    print(f"消耗时间: {phase_end_time-phase_start_time:.6f} 秒")
-    print()
 
-    # 按special_tokens切分，过滤掉空字符串，返回parts列表
-    print(f"[预分词]")
-    print(f"special_token: {special_tokens}")
-    phase_start_time = time.time()
-
+    # 流式读取训练语料
+    print(f"[流式读入文件 & 预分词]\n文件路径：{input_path}")
+    pretoken_counts = {}
+    buffer = ""  # 缓存区
+    chunk_size = 1024 * 1024  # 1M
+    # 构建预分词器
     if special_tokens:
         escaped_tokens = []
         for token in special_tokens:
             escaped_token = re.escape(token)
             escaped_tokens.append(escaped_token)
+        # 重排序，使得优先匹配长的special_tokens
+        escaped_tokens.sort(key=len, reverse=True)
         pattern = "|".join(escaped_tokens)
-        parts = re.split(pattern, text)
+        max_special_len = max(len(token) for token in special_tokens)
     else:
-        parts = text
-    filtered_parts = []
-    for part in parts:
-        if part:  # part不为空时
-            filtered_parts.append(part)
-    parts = filtered_parts
+        pattern = None
+        max_special_len = 0
+    # 预留buffer最短长度
+    tail_size = max(max_special_len - 1, 1024)
 
-    # 按照gpt-2的正则表达式分词
-    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-    temps = []
-    for temp in parts:
-        temps.extend(re.findall(PAT, temp))
-    parts = temps
+    with open(input_path, "r", encoding="utf-8") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            # 如果没有后续内容
+            if not chunk:
+                break
 
-    # pretoken_counts记录tuple形式的bytes串和对应的频次
-    pretoken_counts = {}
-    for token in parts:
-        token_bytes = token.encode("utf-8")
-        token_tuple = tuple(bytes([b]) for b in token_bytes)
-        pretoken_counts[token_tuple] = pretoken_counts.get(token_tuple, 0) + 1
-    # print("前5条pretoken_counts信息:")
-    # for i, (key, value) in enumerate(list(pretoken_counts.items())[:5], start=1):
-    #     print(f"  {i:02d} {key}: {value}")
+            buffer += chunk
+            # 为了保证分词质量，buffer不能太小
+            if len(buffer) <= tail_size:
+                continue
+
+            safe_text = buffer[:-tail_size]
+            buffer = buffer[-tail_size:]
+            if special_tokens:
+                parts = re.split(pattern, safe_text)
+            else:
+                parts = [safe_text]
+
+            for part in parts:
+                if part:  # 跳过空白串
+                    update_pretoken_counts_from_str(part, pretoken_counts)
+        # 处理剩下的buffer内容
+        if buffer:
+            if special_tokens:
+                final_parts = re.split(pattern, buffer)
+                for part in final_parts:
+                    if part:
+                        update_pretoken_counts_from_str(part, pretoken_counts)
+            else:
+                update_pretoken_counts_from_str(buffer, pretoken_counts)
+
     phase_end_time = time.time()
     print(f"消耗时间: {phase_end_time-phase_start_time:.2f} 秒")
     print()
@@ -1057,6 +1057,21 @@ def get_peak_memory_mb() -> float:
     if sys.platform == "darwin":
         return memory / 1024 / 1024
     return memory / 1024
+
+
+# 根据str的内容预分词并更新pretoken_counts，适用流式读取文件
+def update_pretoken_counts_from_str(
+    text: str,
+    pretoken_counts: dict[tuple[bytes, ...], int],
+) -> None:
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
+    tokens = re.findall(PAT, text)
+
+    for token in tokens:
+        token_bytes = token.encode("utf-8")
+        token_tuple = tuple(bytes([b]) for b in token_bytes)
+        pretoken_counts[token_tuple] = pretoken_counts.get(token_tuple, 0) + 1
 
 
 # 测试单独函数效果
