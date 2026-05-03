@@ -3,19 +3,23 @@ from __future__ import annotations
 # from cgitb import text
 from abc import update_abstractmethods
 from ast import pattern
+from curses import doupdate
 from importlib.resources import files
+from math import inf
 from operator import truediv
 import os
 from collections.abc import Iterable
 from random import vonmisesvariate
 from re import escape
 from selectors import DefaultSelector
+from statistics import mean
+from turtle import shape
 from typing import IO, Any, BinaryIO, Iterator
 
 import numpy.typing as npt
 import torch
+from torch import Tensor, nn
 from jaxtyping import Bool, Float, Int
-from torch import Tensor
 
 import regex as re
 import json
@@ -28,6 +32,9 @@ import resource
 import sys
 from pathlib import Path
 from multiprocessing import Pool, process
+
+import math
+from einops import rearrange, einsum
 
 
 class Tokenizer:
@@ -202,6 +209,29 @@ class Tokenizer:
         return ids
 
 
+class Linear(nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
+        super().__init__()
+        # 创建空tensor然后初始化
+        weight = torch.empty((out_features, in_features), device=device, dtype=dtype)
+        std = math.sqrt(2 / (in_features + out_features))
+        # 加了_是原地修改，所以不用在前面写weigth=...
+        torch.nn.init.trunc_normal_(weight, mean=0, std=std, a=-3 * std, b=3 * std)
+        # 使得pytorch可以处理参数
+        self.weight = nn.Parameter(weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 等价于 Y = x @ W.T
+        Y = einsum(x, self.weight, "... d_in, d_out d_in -> ... d_out")
+        return Y
+
+
 def run_linear(
     d_in: int,
     d_out: int,
@@ -221,7 +251,12 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    raise NotImplementedError
+    # 这里weights是指定的权重，这里不需要我们初始化了
+    # in_features实际是输入的x。d_in, d_out才是构造 Linear的 features
+    linear = Linear(d_in, d_out)
+    # 调用load_state_dict()覆盖weight，函数接收字典
+    linear.load_state_dict({"weight": weights})
+    return linear(in_features)
 
 
 def run_embedding(
@@ -1139,16 +1174,8 @@ def process_chunk(
 
 # 测试单独函数效果
 if __name__ == "__main__":
-    vocab_path = "tests/fixtures/gpt2_vocab.json"
-    merges_path = "tests/fixtures/gpt2_merges.txt"
-    special_tokens = ["<|endoftext|>", "<|pad|>"]
-
-    tok = Tokenizer.from_files(vocab_path, merges_path, special_tokens)
-    # ids = tok.give_ids("hello")
-    # tok.decode(ids)
-    text = "the c<|endoftext|>at ate"
-    text_encode = tok.encode(text)
-    text_decode = tok.decode(text_encode)
-    print(text)
-    print(text_decode)
-    print(text == text_decode)
+    # d_in,d_out
+    linear = Linear(3, 2)
+    # ... d_in
+    x = torch.empty((2, 3))
+    nn.init.trunc_normal_(x)
