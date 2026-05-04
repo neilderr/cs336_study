@@ -6,7 +6,7 @@ from ast import pattern
 from curses import doupdate
 import decimal
 from importlib.resources import files
-from math import inf
+from math import inf, sqrt
 from operator import truediv
 import os
 from collections.abc import Iterable
@@ -256,6 +256,30 @@ class Embedding(nn.Module):
         # 最后自动按照token_ids里的内容，缩影embedding里的内容并进行合并
         # 即保留token_ids形状，在后面多加一维embedding内容
         return self.weight[token_ids]
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, d_model: int, eps: float = 1e-5, device=None, dtype=None):
+        super().__init__()
+
+        self.eps = eps
+
+        g = torch.ones(d_model, device=device, dtype=dtype)
+        self.weight = nn.Parameter(g)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        in_dtype = x.dtype
+        x = x.to(torch.float32)
+        # x里每个元素都求平方
+        x_square = x.pow(2)
+        # 求平均值
+        mean_square = x_square.mean(dim=-1, keepdim=True)
+        # 加上eps再开根号，rms.shape == (batch, seq, 1)，后续x/rms时，
+        rms = torch.sqrt(mean_square + self.eps)
+        # 批量计算
+        rms_norm = x / rms * self.weight
+        # 恢复原本的类型
+        return rms_norm.to(in_dtype)
 
 
 def run_linear(
@@ -632,7 +656,9 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    rms_norm = RMSNorm(d_model, eps)
+    rms_norm.load_state_dict({"weight": weights})
+    return rms_norm(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
