@@ -4,6 +4,7 @@ from __future__ import annotations
 from abc import update_abstractmethods
 from ast import pattern
 from curses import doupdate
+import decimal
 from importlib.resources import files
 from math import inf
 from operator import truediv
@@ -13,8 +14,9 @@ from random import vonmisesvariate
 from re import escape
 from selectors import DefaultSelector
 from statistics import mean
-from turtle import shape
+from turtle import forward, shape
 from typing import IO, Any, BinaryIO, Iterator
+from unicodedata import numeric
 
 import numpy.typing as npt
 import torch
@@ -232,6 +234,30 @@ class Linear(nn.Module):
         return Y
 
 
+# token -> 一个embedding_dim维张量的映射表
+class Embedding(nn.Module):
+    def __init__(
+        self,
+        num_embeddings: int,  # 词汇表大小
+        embedding_dim: int,  # 嵌入向量的维度
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
+        super().__init__()
+        weight = torch.empty(
+            (num_embeddings, embedding_dim), device=device, dtype=dtype
+        )
+        torch.nn.init.trunc_normal_(weight, mean=0, std=1, a=-3, b=3)
+        self.weight = nn.Parameter(weight)
+
+    # 输入：(batch,seq)
+    # 输出：(batch,seq,embedding_dim)
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        # 最后自动按照token_ids里的内容，缩影embedding里的内容并进行合并
+        # 即保留token_ids形状，在后面多加一维embedding内容
+        return self.weight[token_ids]
+
+
 def run_linear(
     d_in: int,
     d_out: int,
@@ -277,8 +303,9 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    embedding = Embedding(vocab_size, d_model)
+    embedding.load_state_dict({"weight": weights})
+    return embedding(token_ids)
 
 
 def run_swiglu(
