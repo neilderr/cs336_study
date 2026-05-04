@@ -14,13 +14,14 @@ from random import vonmisesvariate
 from re import escape
 from selectors import DefaultSelector
 from statistics import mean
+from tkinter import Y
 from turtle import forward, shape
 from typing import IO, Any, BinaryIO, Iterator
 from unicodedata import numeric
 
 import numpy.typing as npt
 import torch
-from torch import Tensor, nn
+from torch import Tensor, nn, sigmoid
 from jaxtyping import Bool, Float, Int
 
 import regex as re
@@ -282,6 +283,39 @@ class RMSNorm(nn.Module):
         return rms_norm.to(in_dtype)
 
 
+class SiLU(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        result = x * torch.sigmoid(x)
+        return result
+
+
+class SwiGLU(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        d_ff: int,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
+        super().__init__()
+        # w1,w3,w2用 Linear实现
+        self.w1 = Linear(d_model, d_ff, device=device, dtype=dtype)
+        self.w2 = Linear(d_ff, d_model, device=device, dtype=dtype)
+        self.w3 = Linear(d_model, d_ff, device=device, dtype=dtype)
+
+        self.silu = SiLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w1_out = self.silu(self.w1(x))
+        w3_out = self.w3(x)
+        w2_in = w1_out * w3_out
+        Y = self.w2(w2_in)
+        return Y
+
+
 def run_linear(
     d_in: int,
     d_out: int,
@@ -361,7 +395,14 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    # 上面的注释函数要用Linear实现 w1、w2、w3
+
+    swiglu = SwiGLU(d_model, d_ff)
+    # 注意这里w1是Linear，所以key得用w1.weight"
+    swiglu.load_state_dict(
+        {"w1.weight": w1_weight, "w2.weight": w2_weight, "w3.weight": w3_weight}
+    )
+    return swiglu(in_features)
 
 
 def run_scaled_dot_product_attention(
