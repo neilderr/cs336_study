@@ -15,6 +15,7 @@ from re import escape
 from selectors import DefaultSelector
 from statistics import mean
 from tkinter import Y
+from tkinter.constants import X
 from turtle import forward, position, shape
 from typing import IO, Any, BinaryIO, Iterator
 from unicodedata import numeric
@@ -362,6 +363,21 @@ class RotrayPositionalEmbedding(nn.Module):
         # rotated.shaped == (..., seq_len, d_k)
         rotated = rotated.view(*rotated.shape[:-2], self.d_k)
         return rotated
+
+
+def softmax(x: Float[Tensor, " ..."], dim: int):
+    print()
+    print(x)
+    # 求出最大元素，并从x中减去，[0]是最大值，[1]是最大值所在的位置索引
+    max_vals = torch.max(x, dim=dim, keepdim=True)[0]
+    x = x - max_vals
+
+    # 计算指数并广播除法
+    exp_x = torch.exp(x)
+    sum_exp = torch.sum(exp_x, dim=dim, keepdim=True)
+    output = exp_x / sum_exp
+    print(output)
+    return output
 
 
 def run_linear(
@@ -802,7 +818,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(
