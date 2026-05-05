@@ -15,13 +15,13 @@ from re import escape
 from selectors import DefaultSelector
 from statistics import mean
 from tkinter import Y
-from turtle import forward, shape
+from turtle import forward, position, shape
 from typing import IO, Any, BinaryIO, Iterator
 from unicodedata import numeric
 
 import numpy.typing as npt
 import torch
-from torch import Tensor, nn, sigmoid
+from torch import Tensor, max_pool1d_with_indices, nn, sigmoid
 from jaxtyping import Bool, Float, Int
 
 import regex as re
@@ -316,6 +316,54 @@ class SwiGLU(nn.Module):
         return Y
 
 
+class RotrayPositionalEmbedding(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+        super().__init__()
+
+        # d_k不是偶数直接报错
+        assert d_k % 2 == 0
+
+        self.d_k = d_k  # 每个token向量有多长
+        self.max_seq_len = max_seq_len  # 序列有多长，即有多少个token
+
+        # 计算i和j，即位置信息。j=k-1
+        positions = torch.arange(max_seq_len, device=device)
+        pair_indices = torch.arange(d_k // 2, device=device)
+        positions = positions[:, None]
+        pair_indices = pair_indices[None, :]
+
+        # 构造cos表和sin表
+        angles = positions / (theta ** (2 * pair_indices / d_k))
+        cos_table = torch.cos(angles)
+        sin_table = torch.sin(angles)
+
+        # register_buffer存储
+        self.register_buffer("cos_table", cos_table, persistent=False)
+        self.register_buffer("sin_table", sin_table, persistent=False)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor):
+        # 获取保存的cos表和sin表
+        cos = self.cos_table[token_positions]
+        sin = self.sin_table[token_positions]
+
+        # x.shape==(..., seq_len, d_k)
+        # token_positions.shape == (..., seq_len)
+
+        # 拆分x的最后一维为pair
+        # x.shape==(..., seq_len, d_k//2, 2)
+        x = x.view(*x.shape[:-1], self.d_k // 2, 2)
+        x1 = x[..., 0]
+        x2 = x[..., 1]
+
+        rot1 = x1 * cos - x2 * sin
+        rot2 = x1 * sin + x2 * cos
+        # rotated.shaped == (..., seq_len, d_k//2, 2)
+        rotated = torch.stack((rot1, rot2), dim=-1)
+        # rotated.shaped == (..., seq_len, d_k)
+        rotated = rotated.view(*rotated.shape[:-2], self.d_k)
+        return rotated
+
+
 def run_linear(
     d_in: int,
     d_out: int,
@@ -395,7 +443,8 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    # 上面的注释函数要用Linear实现 w1、w2、w3
+
+    # 上面的注释暗示函数要用Linear实现 w1、w2、w3
 
     swiglu = SwiGLU(d_model, d_ff)
     # 注意这里w1是Linear，所以key得用w1.weight"
@@ -519,7 +568,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rope = RotrayPositionalEmbedding(theta, d_k, max_seq_len)
+    return rope(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
