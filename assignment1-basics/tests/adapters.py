@@ -22,7 +22,7 @@ from unicodedata import numeric
 
 import numpy.typing as npt
 import torch
-from torch import Tensor, max_pool1d_with_indices, nn, sigmoid
+from torch import Tensor, kthvalue, max_pool1d_with_indices, nn, sigmoid
 from jaxtyping import Bool, Float, Int
 
 import regex as re
@@ -380,6 +380,32 @@ def softmax(x: Float[Tensor, " ..."], dim: int):
     return output
 
 
+# 缩放点积注意力函数
+def scaled_dot_product_attention(
+    Q: Float[Tensor, " ... queries d_k"],
+    K: Float[Tensor, " ... keys d_k"],
+    V: Float[Tensor, " ... keys d_v"],
+    mask: Bool[Tensor, " ... queries keys"] | None = None,
+) -> Float[Tensor, " ... queries d_v"]:
+    # 交换K的最后两维
+    K_t = K.transpose(-2, -1)
+
+    d_k = Q.shape[-1]
+    scores = einsum(Q, K_t, "... queries d_k, ... d_k keys -> ... queries keys")
+    scores = scores / math.sqrt(d_k)
+    # mask按位取反，如果是false，则用inf替换。
+    # masked_fill(condition, value)
+    scores.masked_fill_(~mask, float("-inf"))
+    # 对最后一维(keys) 进行softmax
+    attn_probs = softmax(scores, dim=-1)
+
+    attn_output = einsum(
+        attn_probs, V, " ... queries keys, ... keys d_v -> ... queries d_v"
+    )
+    return attn_output
+    # 返回结果
+
+
 def run_linear(
     d_in: int,
     d_out: int,
@@ -488,7 +514,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return scaled_dot_product_attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
