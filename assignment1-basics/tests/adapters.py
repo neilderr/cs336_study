@@ -20,13 +20,15 @@ from turtle import forward, position, shape
 from typing import IO, Any, BinaryIO, Iterator
 from unicodedata import numeric
 
+from numpy import dtype
 import numpy.typing as npt
 from sympy import false, true
+from sympy.polys.densetools import dup_decompose
 from sympy.printing.c import none
 from sympy.solvers.simplex import InfeasibleLPError
 from tests.conftest import theta
 import torch
-from torch import Tensor, kthvalue, max_pool1d_with_indices, nn, sigmoid
+from torch import Tensor, kthvalue, max_pool1d_with_indices, nn, rms_norm, sigmoid
 from jaxtyping import Bool, Float, Int
 
 import regex as re
@@ -34,6 +36,8 @@ import json
 
 # byte -> unicode_char 的表
 from tests.common import gpt2_bytes_to_unicode
+from torch._prims_common import dtype_or_default
+from torch.distributed.fsdp.api import FullStateDictConfig
 from tqdm import tqdm
 import time
 import resource
@@ -246,7 +250,7 @@ class Embedding(nn.Module):
     def __init__(
         self,
         num_embeddings: int,  # 词汇表大小
-        embedding_dim: int,  # 嵌入向量的维度
+        embedding_dim: int,  # 嵌入向量的维度，即d_model
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ):
@@ -274,7 +278,7 @@ class RMSNorm(nn.Module):
         g = torch.ones(d_model, device=device, dtype=dtype)
         self.weight = nn.Parameter(g)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Float[Tensor, " ... d_model"]:
         in_dtype = x.dtype
         x = x.to(torch.float32)
         # x里每个元素都求平方
@@ -298,6 +302,7 @@ class SiLU(nn.Module):
         return result
 
 
+# 注意这里(... d_model)经过w1、w3后变成(... d_ff)，最后通过w2变回(... d_model)
 class SwiGLU(nn.Module):
     def __init__(
         self,
@@ -422,7 +427,7 @@ class MultiheadSelfAttention(nn.Module):
         x: torch.Tensor,
         is_rope: bool = False,
         token_positions: torch.Tensor = None,
-    ):
+    ) -> Float[Tensor, " ... sequence_length d_model"]:
         # 做整体weight和x的线性变换
         x_out = self.qkv_proj(x)
         qkv = rearrange(  # attention 期望的形状是(... seq_len, d_k)
@@ -459,6 +464,97 @@ class MultiheadSelfAttention(nn.Module):
             attn_score, "... num_heads seq_len d_v -> ... seq_len (num_heads d_v)"
         )
         output = self.o_proj(attn_score)
+        return output
+
+
+class TransformerBlock(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        max_seq_len: int = None,
+        theta: float = None,
+        device: torch.device | None = None,
+        dtype: torch.detype | None = None,
+    ):
+        super().__init__()
+
+        self.rms_norm_1 = RMSNorm(d_model, device=device, dtype=dtype)
+        self.attn = MultiheadSelfAttention(
+            d_model,
+            num_heads,
+            theta=theta,
+            max_seq_len=max_seq_len,
+            device=device,
+            dtype=dtype,
+        )
+        self.rms_norm_2 = RMSNorm(d_model, device=device, dtype=dtype)
+        self.ffn = SwiGLU(d_model, d_ff, device=device, dtype=dtype)
+
+    def forward(
+        self, x: torch.Tensor
+    ) -> Float[Tensor, " batch sequence_length d_model"]:
+
+        # 前半部分
+        normed_x = self.rms_norm_1(x)
+        attn_out = self.attn(normed_x, is_rope=True)
+        y = attn_out + x
+
+        # 后半部分
+        normed_y = self.rms_norm_2(y)
+        ffn_out = self.ffn(normed_y)
+        z = y + ffn_out
+
+        return z
+
+
+class TransformerLM(nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        context_length: int,  # RoPE 所用的max_seq_len
+        d_model: int,
+        num_layers: int,
+        num_heads: int,
+        d_ff: int,
+        rope_theta: float,  # RoPE 所用的theta
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
+        super().__init__()
+        # 嵌入层
+        self.embedding = Embedding(vocab_size, d_model, device=device, dtype=dtype)
+        # 多个transformer块
+        self.blocks = nn.ModuleList()
+        for _ in range(num_layers):
+            self.blocks.append(
+                TransformerBlock(
+                    d_model,
+                    num_heads,
+                    d_ff,
+                    max_seq_len=context_length,
+                    theta=rope_theta,
+                    device=device,
+                    dtype=dtype,
+                )
+            )
+        # RMSNorm层
+        self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
+        # 最后的线性层
+        self.lm_head = Linear(  # 注意in_features和out_features
+            d_model, vocab_size, device=device, dtype=dtype
+        )
+
+    def forward(
+        self, x: Int[Tensor, " batch_size sequence_length"]
+    ) -> Float[Tensor, " batch_size sequence_length vocab_size"]:
+        x = self.embedding(x)
+
+        for block in self.blocks:
+            x = block(x)
+        x_normed = self.ln_final(x)
+        output = self.lm_head(x_normed)
         return output
 
 
@@ -798,7 +894,33 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    transformer_block = TransformerBlock(
+        d_model,
+        num_heads,
+        d_ff,
+        max_seq_len=max_seq_len,
+        theta=theta,
+    )
+    qkv_proj = torch.cat(
+        [
+            weights["attn.q_proj.weight"],
+            weights["attn.k_proj.weight"],
+            weights["attn.v_proj.weight"],
+        ],
+        dim=0,
+    )
+    transformer_block.load_state_dict(
+        {
+            "rms_norm_1.weight": weights["ln1.weight"],
+            "attn.o_proj.weight": weights["attn.output_proj.weight"],
+            "attn.qkv_proj.weight": qkv_proj,
+            "rms_norm_2.weight": weights["ln2.weight"],
+            "ffn.w1.weight": weights["ffn.w1.weight"],
+            "ffn.w2.weight": weights["ffn.w2.weight"],
+            "ffn.w3.weight": weights["ffn.w3.weight"],
+        }
+    )
+    return transformer_block(in_features)
 
 
 def run_transformer_lm(
@@ -880,7 +1002,51 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+
+    transformer_lm = TransformerLM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        d_model=d_model,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        rope_theta=rope_theta,
+    )
+
+    # 构建权重字典
+    full_state_dict = {
+        "embedding.weight": weights["token_embeddings.weight"],
+        "ln_final.weight": weights["ln_final.weight"],
+        "lm_head.weight": weights["lm_head.weight"],
+    }
+    for i in range(num_layers):
+        qkv_proj = torch.cat(
+            [
+                weights[f"layers.{i}.attn.q_proj.weight"],
+                weights[f"layers.{i}.attn.k_proj.weight"],
+                weights[f"layers.{i}.attn.v_proj.weight"],
+            ],
+            dim=0,
+        )
+
+        full_state_dict.update(
+            {
+                f"blocks.{i}.rms_norm_1.weight": weights[f"layers.{i}.ln1.weight"],
+                f"blocks.{i}.rms_norm_2.weight": weights[f"layers.{i}.ln2.weight"],
+                f"blocks.{i}.ffn.w1.weight": weights[f"layers.{i}.ffn.w1.weight"],
+                f"blocks.{i}.ffn.w2.weight": weights[f"layers.{i}.ffn.w2.weight"],
+                f"blocks.{i}.ffn.w3.weight": weights[f"layers.{i}.ffn.w3.weight"],
+                f"blocks.{i}.attn.qkv_proj.weight": qkv_proj,
+                f"blocks.{i}.attn.o_proj.weight": weights[
+                    f"layers.{i}.attn.output_proj.weight"
+                ],
+            }
+        )
+
+    for k, v in full_state_dict.items():
+        print(k, v)
+    transformer_lm.load_state_dict(full_state_dict)
+    return transformer_lm(in_indices)
 
 
 def run_rmsnorm(
