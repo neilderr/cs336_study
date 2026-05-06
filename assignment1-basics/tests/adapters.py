@@ -21,6 +21,10 @@ from typing import IO, Any, BinaryIO, Iterator
 from unicodedata import numeric
 
 import numpy.typing as npt
+from sympy import false, true
+from sympy.printing.c import none
+from sympy.solvers.simplex import InfeasibleLPError
+from tests.conftest import theta
 import torch
 from torch import Tensor, kthvalue, max_pool1d_with_indices, nn, sigmoid
 from jaxtyping import Bool, Float, Int
@@ -213,6 +217,7 @@ class Tokenizer:
         return ids
 
 
+# 注意输入顺序是in_features、out_features，线性层形状是(out_features, in_features)
 class Linear(nn.Module):
     def __init__(
         self,
@@ -317,8 +322,15 @@ class SwiGLU(nn.Module):
         return Y
 
 
-class RotrayPositionalEmbedding(nn.Module):
-    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(
+        self,
+        d_k: int,
+        max_seq_len: int = 2048,
+        theta: float = 10000.0,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
         super().__init__()
 
         # d_k不是偶数直接报错
@@ -328,8 +340,8 @@ class RotrayPositionalEmbedding(nn.Module):
         self.max_seq_len = max_seq_len  # 序列有多长，即有多少个token
 
         # 计算i和j，即位置信息。j=k-1
-        positions = torch.arange(max_seq_len, device=device)
-        pair_indices = torch.arange(d_k // 2, device=device)
+        positions = torch.arange(max_seq_len, device=device, dtype=dtype)
+        pair_indices = torch.arange(d_k // 2, device=device, dtype=dtype)
         positions = positions[:, None]
         pair_indices = pair_indices[None, :]
 
@@ -342,7 +354,9 @@ class RotrayPositionalEmbedding(nn.Module):
         self.register_buffer("cos_table", cos_table, persistent=False)
         self.register_buffer("sin_table", sin_table, persistent=False)
 
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor):
+    def forward(
+        self, x: torch.Tensor, token_positions: torch.Tensor
+    ) -> Float[Tensor, " ... sequence_length d_k"]:
         # 获取保存的cos表和sin表
         cos = self.cos_table[token_positions]
         sin = self.sin_table[token_positions]
@@ -352,7 +366,7 @@ class RotrayPositionalEmbedding(nn.Module):
 
         # 拆分x的最后一维为pair
         # x.shape==(..., seq_len, d_k//2, 2)
-        x = x.view(*x.shape[:-1], self.d_k // 2, 2)
+        x = x.reshape(*x.shape[:-1], self.d_k // 2, 2)
         x1 = x[..., 0]
         x2 = x[..., 1]
 
@@ -361,8 +375,91 @@ class RotrayPositionalEmbedding(nn.Module):
         # rotated.shaped == (..., seq_len, d_k//2, 2)
         rotated = torch.stack((rot1, rot2), dim=-1)
         # rotated.shaped == (..., seq_len, d_k)
-        rotated = rotated.view(*rotated.shape[:-2], self.d_k)
+        rotated = rotated.reshape(*rotated.shape[:-2], self.d_k)
         return rotated
+
+
+class MultiheadSelfAttention(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        theta: float = None,
+        max_seq_len: int = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
+        super().__init__()
+
+        if d_model % num_heads != 0:
+            raise ValueError("d_model不能整除num_heads!!!")
+        d_k = d_v = d_model // num_heads  # 整数除法
+        # d_k必须为偶数
+        if d_k % 2 != 0:
+            raise ValueError("d_k不是偶数!!!")
+
+        self.d_model = d_model
+        self.d_k = d_k
+        self.d_v = d_v
+        self.num_heads = num_heads
+
+        # in_features = out_features = d_model
+        self.o_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+
+        # 前d_model行是 W_q，中间是W_k，最后是W_v
+        self.qkv_proj = Linear(d_model, 3 * d_model, device=device, dtype=dtype)
+
+        # 看需求是否创建rope
+        if theta is not None and max_seq_len is not None:
+            self.rope = RotaryPositionalEmbedding(
+                d_k, theta=theta, max_seq_len=max_seq_len, device=device, dtype=dtype
+            )
+        else:
+            self.rope = None
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        is_rope: bool = False,
+        token_positions: torch.Tensor = None,
+    ):
+        # 做整体weight和x的线性变换
+        x_out = self.qkv_proj(x)
+        qkv = rearrange(  # attention 期望的形状是(... seq_len, d_k)
+            x_out,
+            "... seq_len (three num_heads d_k) -> ... three num_heads seq_len d_k",
+            num_heads=self.num_heads,
+            d_k=self.d_k,
+            three=3,
+        )
+        # 后面三维是 num_heads seq_len d_k
+        q = qkv[..., 0, :, :, :]
+        k = qkv[..., 1, :, :, :]
+        v = qkv[..., 2, :, :, :]
+        # 如果存在token_positions，就对q和k进行rope
+        if is_rope == True:
+            assert (
+                self.rope is not None
+            ), "在token_positions存在的情况下，self.rope不存在!!!"
+
+            if token_positions is None:
+                token_positions = torch.arange(x.shape[-2], device=x.device)
+
+            q = self.rope(q, token_positions)
+            k = self.rope(k, token_positions)
+
+        # 构造因果掩码 causal mask，形状为 (seq_len,seq_len)
+        seq_len = x.shape[-2]
+        mask = torch.tril(  # tril()只保留下三角和对角线
+            torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device)
+        )
+        # 计算注意力分数
+        attn_score = scaled_dot_product_attention(q, k, v, mask=mask)
+        attn_score = rearrange(
+            attn_score, "... num_heads seq_len d_v -> ... seq_len (num_heads d_v)"
+        )
+        output = self.o_proj(attn_score)
+        return output
 
 
 def softmax(x: Float[Tensor, " ..."], dim: int):
@@ -403,7 +500,6 @@ def scaled_dot_product_attention(
         attn_probs, V, " ... queries keys, ... keys d_v -> ... queries d_v"
     )
     return attn_output
-    # 返回结果
 
 
 def run_linear(
@@ -537,7 +633,7 @@ def run_multihead_self_attention(
     Args:
         d_model (int): Dimensionality of the feedforward input and output.
         num_heads (int): Number of heads to use in multi-headed attention.
-        max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
+        # max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
         q_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the Q projection
         k_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the K projection
         v_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the V projection
@@ -548,7 +644,15 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    multi = MultiheadSelfAttention(d_model, num_heads)
+    qkv_proj_weight = torch.cat([q_proj_weight, k_proj_weight, v_proj_weight], dim=0)
+    multi.load_state_dict(
+        {
+            "qkv_proj.weight": qkv_proj_weight,
+            "o_proj.weight": o_proj_weight,
+        }
+    )
+    return multi(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -588,7 +692,17 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    multi = MultiheadSelfAttention(
+        d_model, num_heads, theta=theta, max_seq_len=max_seq_len
+    )
+    qkv_proj_weight = torch.cat([q_proj_weight, k_proj_weight, v_proj_weight], dim=0)
+    multi.load_state_dict(
+        {
+            "qkv_proj.weight": qkv_proj_weight,
+            "o_proj.weight": o_proj_weight,
+        }
+    )
+    return multi.forward(in_features, is_rope=true, token_positions=token_positions)
 
 
 def run_rope(
@@ -610,7 +724,7 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    rope = RotrayPositionalEmbedding(theta, d_k, max_seq_len)
+    rope = RotrayPositionalEmbedding(theta=theta, d_k=d_k, max_seq_len=max_seq_len)
     return rope(in_query_or_key, token_positions)
 
 
