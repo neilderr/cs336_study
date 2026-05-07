@@ -559,8 +559,6 @@ class TransformerLM(nn.Module):
 
 
 def softmax(x: Float[Tensor, " ..."], dim: int):
-    print()
-    print(x)
     # 求出最大元素，并从x中减去，[0]是最大值，[1]是最大值所在的位置索引
     max_vals = torch.max(x, dim=dim, keepdim=True)[0]
     x = x - max_vals
@@ -569,8 +567,40 @@ def softmax(x: Float[Tensor, " ..."], dim: int):
     exp_x = torch.exp(x)
     sum_exp = torch.sum(exp_x, dim=dim, keepdim=True)
     output = exp_x / sum_exp
-    print(output)
     return output
+
+
+def cross_entropy(
+    inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
+) -> Float[Tensor, ""]:
+
+    # 从最后一维vocab_size里取出最大值，全体减去最大值再求和
+    # m = max(o)
+    max_vals = torch.max(inputs, dim=-1, keepdim=True)[0]
+    # o[a] − m
+    inputs = inputs - max_vals
+    # log( sum(...)...
+    logsumexp = torch.log(  # logsumexp.shape == (batch,)
+        torch.sum(torch.exp(inputs), dim=-1)
+    )
+
+    # o[y]−m
+    # targtes 里每个元素都对应 x_{i+1}
+    # 即inputs从0开始遍历每一行，每一行都取对应targets的内容
+    target_logit = inputs[  # target_logit.shape == (batch,)
+        torch.arange(inputs.shape[0]), targets
+    ]
+
+    # 最后损失
+    loss = logsumexp - target_logit
+    return torch.mean(loss)  # 对整个 batch 取平均，也就是 /m
+
+
+# 困惑度，对交叉熵损失返回值取exp
+def perplexity(
+    inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
+) -> Float[Tensor, ""]:
+    return torch.exp(cross_entropy(inputs, targets))
 
 
 # 缩放点积注意力函数
@@ -1142,7 +1172,7 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    return cross_entropy(inputs, targets)
 
 
 # 给定一组参数，将它们的组合梯度裁剪为l2范数，最多为max_l2_norm。
