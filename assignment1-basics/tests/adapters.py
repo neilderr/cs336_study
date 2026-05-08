@@ -607,8 +607,8 @@ class AdamW(torch.optim.Optimizer):
         # 清空梯度，前向传播计算损失 loss，调用 loss.backward() 计算梯度，返回 loss
         loss = None if closure is None else closure()
 
-        # param_groups里是所有参数的权重列表
-        # group里params为可更新参数，其他关键词为对应超参数
+        # param_groups里是所有参数的权重列表，实际训练时不同层可能用不同的超参
+        # group里有params和defaults，即可训练参数和超参数
         for group in self.param_groups:
 
             # 取超参数
@@ -721,6 +721,48 @@ def scaled_dot_product_attention(
         attn_probs, V, " ... queries keys, ... keys d_v -> ... queries d_v"
     )
     return attn_output
+
+
+# 余弦退火
+def learning_rate_cosine_schedule(
+    t: int, lr_max: float, lr_min: float, T_w: int, T_c: int
+):
+    if t < 0:
+        raise ValueError(f"非法的 t: {t}")
+    if t < T_w:  # 热身
+        return t / T_w * lr_max  # python里除法默认返回float类型
+    elif t <= T_c:  # 余弦退火
+        return (
+            lr_min
+            + (1 + math.cos((t - T_w) / (T_c - T_w) * math.pi)) * (lr_max - lr_min) / 2
+        )
+    else:  # 退火后
+        return lr_min
+
+
+# 梯度裁减
+def gradient_clipping(
+    parameters: Iterable[torch.nn.Parameter], max_l2_norm: float, eps: float = 1e-6
+):
+    # 转换成list，防止生成器只能迭代一次
+    params = list(parameters)
+    # 累加梯度，grad是tensor
+    grad_sum = 0
+    for param in params:
+        if param.grad is None:
+            continue
+
+        # 计算整体的梯度范式
+        grad = param.grad.data
+        grad_sum += torch.sum(grad**2)  # 返回的是一个标量，0 维 tensor
+
+    l2_norm = sqrt(grad_sum)
+    if l2_norm > max_l2_norm:
+        scale = max_l2_norm / (l2_norm + eps)
+        for param in params:
+            if param.grad is None:
+                continue
+            param.grad *= scale
 
 
 def run_linear(
@@ -1282,7 +1324,7 @@ def run_gradient_clipping(
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    gradient_clipping(parameters, max_l2_norm)
 
 
 # 返回一个实现AdamW类，并非实例
@@ -1319,7 +1361,9 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    return learning_rate_cosine_schedule(
+        it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters
+    )
 
 
 # 给定模型、优化器和迭代次数，将它们序列化到磁盘。
