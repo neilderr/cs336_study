@@ -40,6 +40,7 @@ import json
 from tests.common import gpt2_bytes_to_unicode
 from torch._prims_common import dtype_or_default
 from torch.distributed.fsdp.api import FullStateDictConfig
+from torch.utils import checkpoint
 from tqdm import tqdm
 import time
 import resource
@@ -791,6 +792,33 @@ def data_loader(
     return inputs, targets
 
 
+def save_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    iteration: int,
+    out: str | os.PathLike | typing.BinaryIO | typing.IO[bytes],
+):
+    check_point = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "iteration": iteration,
+    }
+
+    torch.save(check_point, out)
+
+
+def load_checkpoint(
+    src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes],
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+):
+    check_point = torch.load(src)
+    model.load_state_dict(check_point["model"])
+    optimizer.load_state_dict(check_point["optimizer"])
+
+    return check_point["iteration"]
+
+
 def run_linear(
     d_in: int,
     d_out: int,
@@ -1409,7 +1437,7 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    save_checkpoint(model, optimizer, iteration, out)
 
 
 # 给定序列化的检查点（路径或文件-like 对象），将序列化的状态恢复到给定的模型和优化器中。
@@ -1432,7 +1460,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return load_checkpoint(src, model, optimizer)
 
 
 # 给定词汇表、合并列表和特殊令牌列表，返回一个使用这些词汇表、合并和特殊令牌的BPE分词器
