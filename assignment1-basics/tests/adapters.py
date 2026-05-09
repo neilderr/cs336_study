@@ -22,6 +22,7 @@ from unicodedata import numeric
 
 from numpy import dtype
 import numpy.typing as npt
+import numpy as np
 from sympy import false, tensor, true
 from sympy.polys.densetools import dup_decompose
 from sympy.printing import defaults
@@ -765,6 +766,31 @@ def gradient_clipping(
             param.grad *= scale
 
 
+def data_loader(
+    x: npt.NDArray,
+    batch_size: int,
+    context_length: int,
+    device: torch.device | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    # 随机起点，np取不到右区间
+    starts = np.random.randint(0, len(x) - context_length, size=batch_size)
+
+    inputs = []
+    targets = []
+
+    for start in starts:
+        inputs.append(x[start : start + context_length])
+        targets.append(x[start + 1 : start + context_length + 1])
+    # 先转换成二维 NumPy 数组，再转换成tensor。比直接从list转换成tensor速度快
+    inputs = np.array(inputs, dtype=np.int64)
+    targets = np.array(targets, dtype=np.int64)
+    # 默认为这些 token IDs 使用 int64 存储
+    inputs = torch.from_numpy(inputs).to(device)
+    targets = torch.from_numpy(targets).to(device)
+
+    return inputs, targets
+
+
 def run_linear(
     d_in: int,
     d_out: int,
@@ -1275,7 +1301,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    return data_loader(dataset, batch_size, context_length, device=device)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
