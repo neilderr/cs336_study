@@ -51,7 +51,7 @@ from multiprocessing import Pool, process
 import math
 from einops import rearrange, einsum
 
-
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from typing import Optional
 
@@ -61,15 +61,35 @@ class Tokenizer:
     def __init__(self, vocab, merges, special_tokens=None):
         self.vocab = vocab
         self.merges = merges
+        self.pat = re.compile(
+            r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        )
+
+        # 把merge建成dict，减少encode阶段时间消耗
+        self.merge_ranks = {merge: rank for rank, merge in enumerate(merges)}
+
         # 把special_tokens从长到短排序，方便后续贪心匹配
         if special_tokens:
             self.special_tokens = sorted(special_tokens, key=len, reverse=True)
+
+            # 构建分词模式
+            escaped_tokens = []
+            for token in self.special_tokens:
+                escaped_token = re.escape(token)
+                escaped_tokens.append(escaped_token)
+            self.pattern = re.compile("(" + "|".join(escaped_tokens) + ")")
+
         else:
-            self.special_tokens = None
+            self.special_tokens = []
+
         # vocab的反查链表
         self.bytes_to_id = {}
         for key, value in vocab.items():
             self.bytes_to_id[value] = key
+
+        # 一些简短str对应的token_id，能极大减少encode时间
+        self.cache = OrderedDict()
+        self.max_cache_size = len(vocab) * 5  # 默认是词表大小的5倍
 
     # 根据文件初始化
     @classmethod
@@ -125,16 +145,10 @@ class Tokenizer:
 
     def encode(self, text: str) -> list[int]:
         # pre-tokenizer预分词
-        # 处理special_tokens，分
+        # 处理special_tokens
         if self.special_tokens:
-            escaped_tokens = []
-            for token in self.special_tokens:
-                escaped_token = re.escape(token)
-                escaped_tokens.append(escaped_token)
-            pattern = "(" + "|".join(escaped_tokens) + ")"
-            parts = re.split(pattern, text)
+            parts = self.pattern.split(text)
         else:
-            self.special_tokens = []
             parts = [text]
         # print(f"special_tokens处理后: {parts}")
         # 清除空格
@@ -149,47 +163,61 @@ class Tokenizer:
         for part in parts:
             if part not in self.special_tokens:
                 # 按gpt-2的正则表达式分词
-                PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-                part = re.findall(PAT, part)
+                part = self.pat.findall(part)
                 # print(f"part = {part}")
 
-                part_bytes = []
                 # 转换为bytes串
                 for pre_token in part:
-                    token_bytes = pre_token.encode("utf-8")
-                    token_seq = tuple(bytes([b]) for b in token_bytes)
-                    part_bytes.append(token_seq)
-                # print(f"part_bytes 结果:\n{part_bytes}")
+                    # 如果命中cache，直接加入ids
+                    if pre_token in self.cache:
+                        ids.extend(self.cache[pre_token])  # 添加的是一串token_id
+                        continue
 
-                # 对预分词结果进行合并操作
-                # 依照每一个merge，遍历一次part_bytes进行合并
-                # print(f"merges长度: {len(self.merges)}")
-                for merge in self.merges:
-                    # print(f"第{epoch}轮合并：")
-                    merged_tokens = []
-                    for seq in part_bytes:
-                        # print(token_seq)
+                    token_bytes = pre_token.encode("utf-8")
+                    seq = tuple(bytes([b]) for b in token_bytes)
+                    # seq = (b'h', b'e', b'l', b'l', b'o')
+
+                    # 合并操作
+                    while True:
+                        pairs = [(seq[i], seq[i + 1]) for i in range(len(seq) - 1)]
+
+                        # 找到可以合并的pair和对应的rank
+                        valid_pairs = [
+                            pair for pair in pairs if pair in self.merge_ranks
+                        ]
+
+                        # 如果没有可以合并的就退出
+                        if not valid_pairs:
+                            break
+
+                        # 找出rank最小，即优先级最大的pair
+                        best_pair = min(
+                            valid_pairs, key=lambda pair: self.merge_ranks[pair]
+                        )
                         new_seq = []
                         i = 0
                         seq_len = len(seq)
                         while i < seq_len:
-                            if i < seq_len - 1 and (seq[i], seq[i + 1]) == merge:
+                            if i < seq_len - 1 and (seq[i], seq[i + 1]) == best_pair:
                                 token = seq[i] + seq[i + 1]
                                 new_seq.append(token)
                                 i += 2
                             else:
                                 new_seq.append(seq[i])
                                 i += 1
-                        new_seq = tuple(new_seq)
-                        merged_tokens.append(new_seq)
-                    part_bytes = merged_tokens
-                merged_tokens = part_bytes
-                # print(merged_tokens)
+                        # 更新seq
+                        seq = tuple(new_seq)
 
-                for token_sequence in merged_tokens:
-                    for token_bytes in token_sequence:
-                        ids.append(self.bytes_to_id[token_bytes])
-                # print()
+                    # 注意这里append和extend的使用
+                    pretoken_ids = []
+
+                    for token_bytes in seq:
+                        pretoken_ids.append(self.bytes_to_id[token_bytes])
+                    ids.extend(pretoken_ids)
+                    # 存入缓存
+                    self.put_cache(pre_token, pretoken_ids)
+
+                    # print()
             else:
                 # print(f"special类型: {type(part)}")
                 ids.append(self.bytes_to_id[part.encode("utf-8")])
@@ -198,9 +226,17 @@ class Tokenizer:
         return ids
 
     # 返回值是Iterable，所以得用yield一点点返回
-    def encode_iterable(self, iterable: Iterable[str]) -> Iterable[int]:
+    def encode_iterable(
+        self,
+        iterable: Iterable[str],
+        pbar=None,
+    ) -> Iterable[int]:
         for text in iterable:
             ids = self.encode(text)
+
+            if pbar is not None:
+                pbar.update(len(text.encode("utf-8")))
+
             for token_id in ids:
                 yield token_id
 
@@ -215,6 +251,14 @@ class Tokenizer:
         decoded_text = decoded_bytes.decode("utf-8", errors="replace")
         # print(decoded_text)
         return decoded_text
+
+    # cache调度策略，FIFO
+    def put_cache(self, pre_token: str, pretoken_ids: list[int]):
+        # 大于最大容量，执行FIFO策略,删除最老的
+        if len(self.cache) > self.max_cache_size:
+            self.cache.popitem(last=False)
+
+        self.cache[pre_token] = pretoken_ids
 
     # 测试用，将string转换为vocab内的token_id
     def give_ids(self, text) -> list[int]:
