@@ -28,7 +28,7 @@ from sympy.polys.densetools import dup_decompose
 from sympy.printing import defaults
 from sympy.printing.c import none
 from sympy.solvers.simplex import InfeasibleLPError
-from tests.conftest import theta
+from tests.conftest import theta, vocab_size
 import torch
 from torch import Tensor, kthvalue, max_pool1d_with_indices, nn, rms_norm, sigmoid
 from jaxtyping import Bool, Float, Int
@@ -711,9 +711,15 @@ def softmax(x: Float[Tensor, " ..."], dim: int):
     return output
 
 
+# 支持多维张量
 def cross_entropy(
-    inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
+    inputs: Float[Tensor, "... batch_size vocab_size"],
+    targets: Int[Tensor, "... batch_size"],
 ) -> Float[Tensor, ""]:
+
+    # 将多维向量展开
+    inputs = inputs.reshape(-1, inputs.shape[-1])
+    targets = targets.reshape(-1)
 
     # 从最后一维vocab_size里取出最大值，全体减去最大值再求和
     # m = max(o)

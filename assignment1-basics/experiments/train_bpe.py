@@ -2,7 +2,6 @@
 
 import json
 import os
-from sys import exception
 from pathlib import Path
 
 from tests.adapters import run_train_bpe
@@ -63,7 +62,7 @@ def train_bpe(
         with open(vocab_output_path, "w", encoding="utf-8") as f:
             json.dump(saved_vocab, f, ensure_ascii=False, indent=2)
         print(f"vocab 保存成功: {vocab_output_path}")
-    except exception as e:
+    except Exception as e:
         print(f"vocab 保存失败！！！: {vocab_output_path}")
         print(f"错误信息: {e}")
     # merges: list[tuple[bytes,bytes]]
@@ -87,7 +86,7 @@ def train_bpe(
             for merge_line in saved_merges:
                 f.write(merge_line + "\n")
         print(f"merges 保存成功: {merges_output_path}")
-    except exception as e:
+    except Exception as e:
         print(f"merges 保存失败！！！: {merges_output_path}")
         print(f"错误信息: {e}")
 

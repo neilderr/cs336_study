@@ -6,6 +6,7 @@ from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 
+
 # 配置信息
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -43,7 +44,7 @@ train_token_ids = np.array(train_token_ids, dtype=np.int32)
 try:
     np.save(TRAIN_TOKENS_PATH, train_token_ids)
     print(f"训练集转换成功: {TRAIN_TOKENS_PATH}\n")
-except exception as e:
+except Exception as e:
     print(f"训练集转换失败！！！")
     print(f"错误信息: {e}\n")
 
@@ -60,6 +61,6 @@ valid_token_ids = np.array(valid_token_ids, dtype=np.int32)
 try:
     np.save(VALID_TOKENS_PATH, valid_token_ids)
     print(f"验证集转换成功: {TRAIN_TOKENS_PATH}\n")
-except exception as e:
+except Exception as e:
     print(f"验证集转换失败！！！")
     print(f"错误信息: {e}\n")
