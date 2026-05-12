@@ -1,0 +1,30 @@
+{
+  "vocab_size": 10000,
+  "context_length": 256,
+  "d_model": 512,
+  "num_layers": 4,
+  "num_heads": 16,
+  "d_ff": 1344,
+  "rope_theta": 10000.0,
+
+  "batch_size": 32,
+  "max_steps": 1000,
+  "lr_max": 0.0003,
+  "lr_min": 0.00003,
+  "T_w": 50,
+  "T_c": 1000,
+  "betas": [0.9, 0.95],
+  "eps": 1e-8,
+  "weight_decay": 0.1,
+  "max_l2_norm": 1.0,
+
+  "log_interval": 10,
+  "eval_interval": 50,
+  "eval_steps": 10,
+
+  "max_next_tokens": 128,
+  "temperature": 1.0,
+  "top_p": 0.8,
+
+  "checkpoint_name": "lm_step_440.pt"
+}

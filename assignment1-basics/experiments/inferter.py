@@ -1,6 +1,8 @@
 import torch
 from tests.adapters import TransformerLM, Tokenizer, AdamW, decoding, load_checkpoint
 from pathlib import Path
+import json
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -10,30 +12,16 @@ VOCAB_PATH = TOKENIZER_DIR / "vocab.json"
 MERGES_PATH = TOKENIZER_DIR / "merges.txt"
 SPECIAL_TOKENS = ["<|endoftext|>"]
 MODEL_PATH = PROJECT_ROOT / "checkpoints" / "lm_step_440.pt"
+CONFIG_PATH = PROJECT_ROOT / "experiments" / "config.json"
 
 
-vocab_size = 10000
-context_length = 256
-d_model = 512
-num_layers = 4
-num_heads = 16
-d_ff = 1344
-rope_theta = 10000.0
+# 读取配置参数
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    config = json.load(f)
 
-batch_size = 32
-max_steps = 1000
-lr_max = 3e-4
-lr_min = 3e-5
-T_w = 50
-T_c = max_steps
-betas = (0.9, 0.95)
-eps = 1e-8
-weight_decay = 0.1
-max_l2_norm = 1.0
-
-max_nex_tokens = 128
-temperature = 1.0
-top_p = 0.8
+max_next_tokens = config["max_next_tokens"]
+temperature = config["temperature"]
+top_p = config["top_p"]
 
 prompt = "Hello World"
 eos_token = "<|endoftext|>"
@@ -47,22 +35,24 @@ else:
     device = "cpu"
 
 model = TransformerLM(
-    vocab_size,
-    context_length,
-    d_model,
-    num_layers,
-    num_heads,
-    d_ff,
-    rope_theta,
+    vocab_size=config["vocab_size"],
+    context_length=config["context_length"],
+    d_model=config["d_model"],
+    num_layers=config["num_layers"],
+    num_heads=config["num_heads"],
+    d_ff=config["d_ff"],
+    rope_theta=config["rope_theta"],
     device=device,
 )
+
 optimizer = AdamW(
     model.parameters(),
-    lr=lr_max,
-    betas=betas,
-    eps=eps,
-    weight_decay=weight_decay,
+    lr=config["lr_max"],
+    betas=tuple(config["betas"]),
+    eps=config["eps"],
+    weight_decay=config["weight_decay"],
 )
+
 load_checkpoint(
     src=MODEL_PATH,
     model=model,
@@ -74,6 +64,6 @@ token_ids = tokenizer.encode(prompt)
 eos_token_id = tokenizer.encode(eos_token)[0]
 
 token_ids = decoding(
-    model, token_ids, max_nex_tokens, temperature, top_p, eos_token_id, device=device
+    model, token_ids, max_next_tokens, temperature, top_p, eos_token_id, device=device
 )
 print(tokenizer.decode(token_ids))
