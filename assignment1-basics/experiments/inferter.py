@@ -11,8 +11,7 @@ TOKENIZER_DIR = DATA_DIR / "tokenizer" / "tinystories"
 VOCAB_PATH = TOKENIZER_DIR / "vocab.json"
 MERGES_PATH = TOKENIZER_DIR / "merges.txt"
 SPECIAL_TOKENS = ["<|endoftext|>"]
-runs_name = "run_001"
-MODEL_PATH = PROJECT_ROOT / "runs" / runs_name / "best.pt"
+MODEL_PATH = PROJECT_ROOT / "checkpoints" / "best.pt"
 CONFIG_PATH = PROJECT_ROOT / "experiments" / "config.json"
 
 
@@ -23,8 +22,9 @@ with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 max_next_tokens = config["max_next_tokens"]
 temperature = config["temperature"]
 top_p = config["top_p"]
+context_length = config["context_length"]
 
-prompt = "Once upon a time there was a little boy named Ben. "
+prompt = "Once upon a time, there was a little boy named Tom."
 eos_token = "<|endoftext|>"
 
 # 确定设备
@@ -37,7 +37,7 @@ else:
 
 model = TransformerLM(
     vocab_size=config["vocab_size"],
-    context_length=config["context_length"],
+    context_length=context_length,
     d_model=config["d_model"],
     num_layers=config["num_layers"],
     num_heads=config["num_heads"],
@@ -58,10 +58,12 @@ load_checkpoint(
     src=MODEL_PATH,
     model=model,
     optimizer=optimizer,
+    map_location=device,
 )
 
 tokenizer = Tokenizer.from_files(VOCAB_PATH, MERGES_PATH, SPECIAL_TOKENS)
 token_ids = tokenizer.encode(prompt)
+token_ids = token_ids[-context_length:]
 eos_token_id = tokenizer.encode(eos_token)[0]
 
 token_ids = decoding(

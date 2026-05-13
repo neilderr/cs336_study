@@ -166,6 +166,15 @@ best_info = load_best_info(best_info_path)
 if best_info is not None:
     best_val_loss = best_info["loss"]
 
+# 输出训练参数
+print(f"训练配置: ")
+print(f"device = {device}")
+print(f"max_steps = {max_steps}")
+print(f"T_w = {T_w}")
+print(f"T_c = {T_c}")
+print(f"lr_max = {lr_max}")
+print(f"lr_min = {lr_min}")
+print("===================================================================")
 
 # 尝试从之前的位置继续训练
 start_step = 1
@@ -184,6 +193,7 @@ if all_checkpoints:
     print(f"从 step = {start_step - 1} 加载 ")
 else:
     print(f"从新训练")
+
 
 # 训练循环
 for step in range(start_step, max_steps + 1):

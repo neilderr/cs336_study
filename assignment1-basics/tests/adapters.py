@@ -870,14 +870,16 @@ def load_checkpoint(
     src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes],
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    map_location: str | torch.device | None = None,
 ):
-    check_point = torch.load(src)
+    check_point = torch.load(src, map_location=map_location)
     model.load_state_dict(check_point["model"])
     optimizer.load_state_dict(check_point["optimizer"])
 
     return check_point["iteration"]
 
 
+# 推理
 def decoding(
     model: TransformerLM,
     token_ids: list[int],
