@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def load_metrics(metrics_path: Path) -> dict[str, list[float]]:
@@ -56,14 +57,57 @@ def load_metrics(metrics_path: Path) -> dict[str, list[float]]:
     }
 
 
+def moving_average(values: list[float], window_size: int) -> np.ndarray:
+    if len(values) == 0:
+        return np.array([])
+
+    if window_size <= 1 or len(values) < window_size:
+        return np.array(values, dtype=float)
+
+    kernel = np.ones(window_size, dtype=float) / window_size
+    smoothed = np.convolve(values, kernel, mode="valid")
+
+    left_pad = window_size // 2
+    right_pad = len(values) - len(smoothed) - left_pad
+
+    return np.pad(smoothed, (left_pad, right_pad), mode="edge")
+
+
 def plot_metrics(run_dir: Path, data: dict[str, list[float]]) -> None:
+    train_loss_smooth = moving_average(data["train_losses"], window_size=11)
+    eval_loss_smooth = moving_average(data["eval_losses"], window_size=3)
+    train_ppl_smooth = moving_average(data["train_ppls"], window_size=11)
+    eval_ppl_smooth = moving_average(data["eval_ppls"], window_size=3)
+
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 
     axes[0, 0].plot(
-        data["train_steps"], data["train_losses"], label="train", linewidth=1.5
+        data["train_steps"],
+        data["train_losses"],
+        label="train raw",
+        linewidth=1.0,
+        alpha=0.35,
     )
     axes[0, 0].plot(
-        data["eval_steps"], data["eval_losses"], label="eval", linewidth=2.0
+        data["train_steps"],
+        train_loss_smooth,
+        label="train smooth",
+        linewidth=2.0,
+    )
+    axes[0, 0].plot(
+        data["eval_steps"],
+        data["eval_losses"],
+        label="eval raw",
+        linewidth=1.0,
+        alpha=0.5,
+        marker="o",
+        markersize=3,
+    )
+    axes[0, 0].plot(
+        data["eval_steps"],
+        eval_loss_smooth,
+        label="eval smooth",
+        linewidth=2.2,
     )
     axes[0, 0].set_title("Loss vs Step")
     axes[0, 0].set_xlabel("Step")
@@ -72,10 +116,32 @@ def plot_metrics(run_dir: Path, data: dict[str, list[float]]) -> None:
     axes[0, 0].legend()
 
     axes[0, 1].plot(
-        data["train_times"], data["train_losses"], label="train", linewidth=1.5
+        data["train_times"],
+        data["train_losses"],
+        label="train raw",
+        linewidth=1.0,
+        alpha=0.35,
     )
     axes[0, 1].plot(
-        data["eval_times"], data["eval_losses"], label="eval", linewidth=2.0
+        data["train_times"],
+        train_loss_smooth,
+        label="train smooth",
+        linewidth=2.0,
+    )
+    axes[0, 1].plot(
+        data["eval_times"],
+        data["eval_losses"],
+        label="eval raw",
+        linewidth=1.0,
+        alpha=0.5,
+        marker="o",
+        markersize=3,
+    )
+    axes[0, 1].plot(
+        data["eval_times"],
+        eval_loss_smooth,
+        label="eval smooth",
+        linewidth=2.2,
     )
     axes[0, 1].set_title("Loss vs Wall-Clock Time")
     axes[0, 1].set_xlabel("Time (s)")
@@ -84,12 +150,37 @@ def plot_metrics(run_dir: Path, data: dict[str, list[float]]) -> None:
     axes[0, 1].legend()
 
     axes[1, 0].plot(
-        data["train_steps"], data["train_ppls"], label="train", linewidth=1.5
+        data["train_steps"],
+        data["train_ppls"],
+        label="train raw",
+        linewidth=1.0,
+        alpha=0.35,
     )
-    axes[1, 0].plot(data["eval_steps"], data["eval_ppls"], label="eval", linewidth=2.0)
+    axes[1, 0].plot(
+        data["train_steps"],
+        train_ppl_smooth,
+        label="train smooth",
+        linewidth=2.0,
+    )
+    axes[1, 0].plot(
+        data["eval_steps"],
+        data["eval_ppls"],
+        label="eval raw",
+        linewidth=1.0,
+        alpha=0.5,
+        marker="o",
+        markersize=3,
+    )
+    axes[1, 0].plot(
+        data["eval_steps"],
+        eval_ppl_smooth,
+        label="eval smooth",
+        linewidth=2.2,
+    )
     axes[1, 0].set_title("Perplexity vs Step")
     axes[1, 0].set_xlabel("Step")
     axes[1, 0].set_ylabel("Perplexity")
+    axes[1, 0].set_yscale("log")
     axes[1, 0].grid(True, alpha=0.3)
     axes[1, 0].legend()
 
@@ -104,6 +195,36 @@ def plot_metrics(run_dir: Path, data: dict[str, list[float]]) -> None:
     axes[1, 1].set_ylabel("Learning Rate")
     axes[1, 1].grid(True, alpha=0.3)
     axes[1, 1].legend()
+
+    if data["eval_losses"]:
+        best_idx = int(np.argmin(data["eval_losses"]))
+        best_step = data["eval_steps"][best_idx]
+        best_loss = data["eval_losses"][best_idx]
+        best_time = data["eval_times"][best_idx]
+
+        axes[0, 0].scatter(
+            [best_step],
+            [best_loss],
+            color="red",
+            s=45,
+            zorder=5,
+            label="_nolegend_",
+        )
+        axes[0, 0].annotate(
+            f"best {best_loss:.3f}",
+            (best_step, best_loss),
+            textcoords="offset points",
+            xytext=(8, -14),
+        )
+
+        axes[0, 1].scatter(
+            [best_time],
+            [best_loss],
+            color="red",
+            s=45,
+            zorder=5,
+            label="_nolegend_",
+        )
 
     fig.suptitle(run_dir.name, fontsize=14)
     fig.tight_layout()

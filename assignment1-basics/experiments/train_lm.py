@@ -151,7 +151,7 @@ def truncate_best_info_after_step(best_info_path: Path, step: int) -> float:
         best_info_path.unlink()
         return float("inf")
 
-    return best_info["val_loss"]
+    return best_info["loss"]
 
 
 # 开始训练
@@ -164,7 +164,7 @@ recent_checkpoints = all_checkpoints[-3:]
 best_val_loss = float("inf")
 best_info = load_best_info(best_info_path)
 if best_info is not None:
-    best_val_loss = best_info["val_loss"]
+    best_val_loss = best_info["loss"]
 
 
 # 尝试从之前的位置继续训练
@@ -287,8 +287,8 @@ for step in range(start_step, max_steps + 1):
 
                     best_info = {
                         "step": step,
-                        "val_loss": mean_val_loss,
-                        "val_ppl": ppl,
+                        "loss": mean_val_loss,
+                        "ppl": ppl,
                         "checkpoint": str(best_checkpoint_path),
                     }
                     with open(best_info_path, "w", encoding="utf-8") as f:

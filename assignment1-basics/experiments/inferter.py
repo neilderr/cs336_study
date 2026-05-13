@@ -11,7 +11,8 @@ TOKENIZER_DIR = DATA_DIR / "tokenizer" / "tinystories"
 VOCAB_PATH = TOKENIZER_DIR / "vocab.json"
 MERGES_PATH = TOKENIZER_DIR / "merges.txt"
 SPECIAL_TOKENS = ["<|endoftext|>"]
-MODEL_PATH = PROJECT_ROOT / "checkpoints" / "lm_step_440.pt"
+runs_name = "run_001"
+MODEL_PATH = PROJECT_ROOT / "runs" / runs_name / "best.pt"
 CONFIG_PATH = PROJECT_ROOT / "experiments" / "config.json"
 
 
@@ -23,7 +24,7 @@ max_next_tokens = config["max_next_tokens"]
 temperature = config["temperature"]
 top_p = config["top_p"]
 
-prompt = "Hello World"
+prompt = "Once upon a time there was a little boy named Ben. "
 eos_token = "<|endoftext|>"
 
 # 确定设备
