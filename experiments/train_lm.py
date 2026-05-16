@@ -5,16 +5,21 @@ import torch
 import json
 
 
-from tests.adapters import (
-    TransformerLM,
-    AdamW,
-    cross_entropy,
-    data_loader,
-    learning_rate_cosine_schedule,
-    gradient_clipping,
-    save_checkpoint,
-    load_checkpoint,
-)
+# from cs336_basics import (
+#     TransformerLM,
+#     AdamW,
+#     cross_entropy,
+#     data_loader,
+#     learning_rate_cosine_schedule,
+#     gradient_clipping,
+#     save_checkpoint,
+#     load_checkpoint,
+# )
+from cs336_basics.model import TransformerLM
+from cs336_basics.optimizer import AdamW, learning_rate_cosine_schedule
+from cs336_basics.data import data_loader, save_checkpoint, load_checkpoint
+from cs336_basics.nn_utils import gradient_clipping, cross_entropy
+
 
 # 配置超参数
 project_root = Path(__file__).resolve().parents[1]

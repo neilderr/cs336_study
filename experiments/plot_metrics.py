@@ -245,7 +245,7 @@ def main() -> None:
     parser.add_argument(
         "--run-name",
         type=str,
-        default="run_001",
+        default="run_max",
         help="Run directory name under assignment1-basics/runs/",
     )
     args = parser.parse_args()

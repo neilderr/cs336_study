@@ -1,15 +1,15 @@
 # 输出文本文件路径
 # 利用分词器生成rain_tokens.npy和valid_tokens.npy
 
-from tests.adapters import Tokenizer
+from cs336_basics.tokenizer import Tokenizer
 from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 
 
 # 配置信息
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = PROJECT_ROOT / "data"
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJECT_DIR / "data"
 
 RAW_DIR = DATA_DIR / "raw"
 TOKENIZER_DIR = DATA_DIR / "tokenizer" / "tinystories"
@@ -33,12 +33,15 @@ TOKENS_DIR.mkdir(parents=True, exist_ok=True)
 
 # 训练集
 total_bytes = TRAIN_TEXT_PATH.stat().st_size
-with open(TRAIN_TEXT_PATH, "r", encoding="utf-8") as f, tqdm(
-    total=total_bytes,
-    unit="B",
-    unit_scale=True,
-    desc=TRAIN_TEXT_PATH.name,
-) as pbar:
+with (
+    open(TRAIN_TEXT_PATH, "r", encoding="utf-8") as f,
+    tqdm(
+        total=total_bytes,
+        unit="B",
+        unit_scale=True,
+        desc=TRAIN_TEXT_PATH.name,
+    ) as pbar,
+):
     train_token_ids = list(tokenizer.encode_iterable(f, pbar=pbar))
 train_token_ids = np.array(train_token_ids, dtype=np.int32)
 try:
@@ -50,12 +53,15 @@ except Exception as e:
 
 # 测试集
 total_bytes = VALID_TEXT_PATH.stat().st_size
-with open(VALID_TEXT_PATH, "r", encoding="utf-8") as f, tqdm(
-    total=total_bytes,
-    unit="B",
-    unit_scale=True,
-    desc=VALID_TEXT_PATH.name,
-) as pbar:
+with (
+    open(VALID_TEXT_PATH, "r", encoding="utf-8") as f,
+    tqdm(
+        total=total_bytes,
+        unit="B",
+        unit_scale=True,
+        desc=VALID_TEXT_PATH.name,
+    ) as pbar,
+):
     valid_token_ids = list(tokenizer.encode_iterable(f, pbar=pbar))
 valid_token_ids = np.array(valid_token_ids, dtype=np.int32)
 try:

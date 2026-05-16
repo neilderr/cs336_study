@@ -1,8 +1,12 @@
 import torch
-from tests.adapters import TransformerLM, Tokenizer, AdamW, decoding, load_checkpoint
 from pathlib import Path
 import json
 
+from cs336_basics.tokenizer import Tokenizer
+from cs336_basics.model import TransformerLM
+from cs336_basics.optimizer import AdamW
+from cs336_basics.data import load_checkpoint
+from cs336_basics.inference import decoding
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"

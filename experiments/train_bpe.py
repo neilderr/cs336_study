@@ -1,16 +1,12 @@
 # 在大数据集上训练bpe
 
-import json
-import os
+import json, os
+
 from pathlib import Path
 
-from tests.adapters import run_train_bpe
+from cs336_basics.tokenizer import run_train_bpe, gpt2_bytes_to_unicode
 
-# byte -> unicode_char 的表
-from tests.common import gpt2_bytes_to_unicode
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SCRIPT_DIR.parent
+_PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 #
@@ -21,10 +17,10 @@ def train_bpe(
     output_path: str | os.PathLike,
     output_prefix: str | None,  # 保存文件的前缀名
 ):
-    # input_path转换为绝对路径
+    # 不管在哪里运行，都能正确读取根目录下的文件
     input_path = Path(input_path)
     if not input_path.is_absolute():
-        input_path = PROJECT_DIR / input_path
+        input_path = _PROJECT_DIR / input_path
 
     # 训练
     vocab, merges = run_train_bpe(
@@ -93,7 +89,8 @@ def train_bpe(
 
 if __name__ == "__main__":
 
-    input_path = "data/TinyStoriesV2-GPT4-train.txt"
+    input_path = "data/raw/TinyStoriesV2-GPT4-train.txt"
+    output_path = "data/output"
     vocab_size = 10000
     special_tokens = ["<|endoftext|>"]
     output_path = "data/output"
