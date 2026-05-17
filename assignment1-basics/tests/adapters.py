@@ -4,7 +4,6 @@ from __future__ import annotations
 
 
 import numpy.typing as npt
-import numpy as np
 
 import torch
 from jaxtyping import Bool, Float, Int
@@ -17,8 +16,7 @@ import time
 import math
 from einops import rearrange, einsum
 
-from collections.abc import Callable, Iterable
-from typing import Optional
+from collections.abc import Iterable
 
 # cs336_basics
 from cs336_basics.tokenizer import *
@@ -515,7 +513,9 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+
+    silu = SiLU()
+    return silu(in_features)
 
 
 def run_get_batch(

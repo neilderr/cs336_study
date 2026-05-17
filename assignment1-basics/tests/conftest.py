@@ -28,6 +28,8 @@ class NumpySnapshot[A: (np.ndarray, Tensor)]:
         always_match_exact: bool = False,
         default_test_name: str | None = None,
     ):
+        if not os.path.isabs(snapshot_dir):
+            snapshot_dir = Path(__file__).resolve().parent.parent / snapshot_dir
         self.snapshot_dir = Path(snapshot_dir)
         os.makedirs(self.snapshot_dir, exist_ok=True)
         self.default_force_update = default_force_update
@@ -102,6 +104,8 @@ class Snapshot[A: (np.ndarray, Tensor)]:
         """
         Snapshot for arbitrary data types, saved as pickle files.
         """
+        if not os.path.isabs(snapshot_dir):
+            snapshot_dir = Path(__file__).resolve().parent.parent / snapshot_dir
         self.snapshot_dir = Path(snapshot_dir)
         os.makedirs(self.snapshot_dir, exist_ok=True)
         self.default_force_update = default_force_update
