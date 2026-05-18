@@ -1,7 +1,11 @@
+# 这是仓库级别的 Python 项目配置。
+# 整个仓库共用根目录这一个 .venv，并且统一在根目录运行测试。
 [project]
-name = "cs336_basics"
+# 这是 uv / 打包工具看到的项目名。
+# 它不决定 Python 里的 import 路径。
+name = "cs336"
 version = "26.0.0"
-description = "CS336 Assignment 1"
+description = "CS336 workspace"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "einops>=0.8",
@@ -23,24 +27,29 @@ dependencies = [
     "humanfriendly",
 ]
 
-[build-system]
-requires = ["uv_build>=0.11.0,<0.12.0"]
-build-backend = "uv_build"
-
-[tool.uv.build-backend]
-module-name = "cs336_basics"
-module-root = ""
-
 [tool.uv]
-package = true
+# 这里把根目录当成“仓库工作区配置”，而不是单独要打包发布的 Python 包。
+# 所以真正的 import 仍然直接来自根目录下的包目录：
+# `cs336_basics/` 和 `cs336_systems/`
+package = false
 python-preference = "managed"
 
 [tool.pytest.ini_options]
+# 这是整个仓库共用的 pytest 配置。
+# 例如：
+# `uv run pytest assignment1-basics/tests`
+# `uv run pytest assignment2-systems/tests`
 log_cli = true
 log_cli_level = "WARNING"
 addopts = "-s"
+filterwarnings = [
+    "ignore::DeprecationWarning:torch.jit.*",
+    "ignore:Attempting to run cuBLAS:UserWarning",
+    "ignore:TensorFloat32:UserWarning",
+]
 
 [tool.ruff]
+# 这是整个仓库共用的 Ruff 静态检查配置。
 line-length = 120
 
 [tool.ruff.lint.extend-per-file-ignores]
